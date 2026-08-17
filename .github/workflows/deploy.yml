@@ -15,6 +15,8 @@ jobs:
 
     steps:
       - name: Start webtop container
+        env:
+          WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
         run: |
           docker run -d \
             --name webtop \
@@ -25,7 +27,7 @@ jobs:
             -e TZ=Etc/UTC \
             -e SUBFOLDER=/ \
             -e TITLE=ghBrowser \
-            -e PASSWORD=${{ secrets.BASIC_AUTH_PASSWORD }} \
+            -e "PASSWORD=$WPASSWORD" \
             lscr.io/linuxserver/webtop:ubuntu-xfce
 
       - name: Wait for webtop

@@ -5,7 +5,7 @@ Password-protected cloud browser running in GitHub Actions with Cloudflare free 
 ## How It Works
 
 - GitHub Actions spins up a full XFCE desktop + Firefox browser
-- Nginx adds basic password protection
+- Webtop's built-in password protects access
 - Cloudflare free quick tunnel gives you a public `*.trycloudflare.com` URL
 - Runs for **5 hours 50 minutes** per workflow dispatch
 - **No server, no Cloudflare account needed** — everything runs in GitHub Actions
@@ -30,24 +30,13 @@ The browser URL will appear in:
 
 ### 3. Access
 
-Open the URL → enter:
-- **Username:** `admin`
-- **Password:** your `BASIC_AUTH_PASSWORD` secret value
-
-## Local Usage
-
-```bash
-docker compose up -d
-# Open http://localhost:3000
-# No password in local mode
-```
+Open the URL → enter your `BASIC_AUTH_PASSWORD` secret value as the password.
 
 ## Architecture
 
 ```
 Cloudflare Free Tunnel (*.trycloudflare.com)
-    → Nginx (basic auth, port 8080)
-        → LinuxServer Webtop (XFCE + Firefox, port 3000)
+    → LinuxServer Webtop (XFCE + Firefox, port 3000)
 ```
 
 All running inside a GitHub Actions runner for 5h 50min.

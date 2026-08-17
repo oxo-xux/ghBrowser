@@ -14,8 +14,6 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Start webtop container
         run: |
           docker run -d \
@@ -27,68 +25,21 @@ jobs:
             -e TZ=Etc/UTC \
             -e SUBFOLDER=/ \
             -e TITLE=ghBrowser \
+            -e PASSWORD=${{ secrets.BASIC_AUTH_PASSWORD }} \
             lscr.io/linuxserver/webtop:ubuntu-xfce
 
-      - name: Wait for webtop to be ready
+      - name: Wait for webtop
         run: |
-          echo "Waiting for webtop to fully initialize (XFCE desktop + web)..."
+          echo "Waiting for webtop to start..."
           for i in $(seq 1 120); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
             if [ "$STATUS" = "200" ]; then
-              # Double check the actual page loads properly
-              BODY=$(curl -s http://localhost:3000 2>/dev/null | head -5)
-              if echo "$BODY" | grep -qi "html\|webtop\|guac\|desktop"; then
-                echo "Webtop is fully ready! (attempt $i)"
-                sleep 10
-                break
-              fi
-            fi
-            echo "  Attempt $i: status=$STATUS, waiting..."
-            sleep 5
-          done
-
-      - name: Setup nginx with basic auth
-        run: |
-          sudo apt-get update && sudo apt-get install -y nginx apache2-utils
-
-          echo "${{ secrets.BASIC_AUTH_PASSWORD }}" | sudo htpasswd -ci /etc/nginx/.htpasswd admin
-
-          sudo tee /etc/nginx/sites-available/browser > /dev/null <<'NGINX'
-          server {
-              listen 8080;
-
-              auth_basic "ghBrowser";
-              auth_basic_user_file /etc/nginx/.htpasswd;
-
-              location / {
-                  proxy_pass http://127.0.0.1:3000;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_read_timeout 86400;
-              }
-          }
-          NGINX
-
-          sudo rm -f /etc/nginx/sites-enabled/default
-          sudo ln -sf /etc/nginx/sites-available/browser /etc/nginx/sites-enabled/
-          sudo nginx -t
-          sudo systemctl restart nginx
-
-          echo "Verifying nginx proxy..."
-          sleep 2
-          for i in $(seq 1 10); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -u "admin:${{ secrets.BASIC_AUTH_PASSWORD }}" http://localhost:8080 2>/dev/null || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "Nginx proxy is working! (status=$STATUS)"
+              echo "Webtop is ready! (attempt $i)"
+              sleep 15
               break
             fi
-            echo "  Nginx check $i: status=$STATUS, retrying..."
-            sleep 3
+            echo "  attempt $i: status=$STATUS"
+            sleep 5
           done
 
       - name: Install cloudflared
@@ -99,10 +50,8 @@ jobs:
 
       - name: Start Cloudflare Tunnel
         run: |
-          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
-          TUNNEL_PID=$!
+          ./cloudflared tunnel --url http://localhost:3000 > tunnel.log 2>&1 &
 
-          echo "Waiting for tunnel..."
           for i in $(seq 1 60); do
             if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
               TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
@@ -110,21 +59,14 @@ jobs:
               echo "==========================================="
               echo "  Browser is LIVE!"
               echo "==========================================="
-              echo ""
               echo "  URL:      $TUNNEL_URL"
-              echo "  Username: admin"
               echo "  Password: (your BASIC_AUTH_PASSWORD secret)"
-              echo ""
-              echo "  Running for ${{ github.event.inputs.duration || '350' }} minutes"
               echo "==========================================="
               echo ""
               echo "## ghBrowser is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "| | |" >> $GITHUB_STEP_SUMMARY
-              echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-              echo "| **URL** | $TUNNEL_URL |" >> $GITHUB_STEP_SUMMARY
-              echo "| **Username** | admin |" >> $GITHUB_STEP_SUMMARY
-              echo "| **Password** | \`BASIC_AUTH_PASSWORD\` secret |" >> $GITHUB_STEP_SUMMARY
+              echo "**URL:** $TUNNEL_URL" >> $GITHUB_STEP_SUMMARY
+              echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY
               break
@@ -135,4 +77,3 @@ jobs:
           DURATION=${{ github.event.inputs.duration || '350' }}
           echo "Keeping alive for $DURATION minutes..."
           sleep ${DURATION}m
-          echo "Time's up! Shutting down..."

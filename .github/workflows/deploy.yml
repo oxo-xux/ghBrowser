@@ -35,7 +35,7 @@ jobs:
           echo "Waiting for webtop to start..."
           for i in $(seq 1 120); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
-            if [ "$STATUS" = "200" ]; then
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
               echo "Webtop is ready! (attempt $i)"
               sleep 15
               break

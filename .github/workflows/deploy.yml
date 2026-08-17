@@ -26,7 +26,7 @@ jobs:
             -e PGID=1000 \
             -e TZ=Etc/UTC \
             -e SUBFOLDER=/ \
-            lscr.io/linuxserver/webtop:alpine-xfce
+            lscr.io/linuxserver/webtop:ubuntu-xfce
 
       - name: Wait for webtop to be ready
         run: |

@@ -7,6 +7,10 @@ on:
         description: "Run duration (minutes)"
         required: false
         default: "350"
+      firefox_version:
+        description: "Firefox image tag (e.g. latest, 130.0, 128.0esr)"
+        required: false
+        default: "latest"
 
 jobs:
   browser:
@@ -26,7 +30,7 @@ jobs:
             -e PGID=1000 \
             -e TZ=Etc/UTC \
             -e TITLE=ghBrowser \
-            lscr.io/linuxserver/firefox:latest
+            lscr.io/linuxserver/firefox:${{ github.event.inputs.firefox_version || 'latest' }}
 
       - name: Wait for Firefox
         run: |
@@ -46,7 +50,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/docker-image.tar
-          key: firefox-latest-${{ runner.os }}
+          key: firefox-${{ github.event.inputs.firefox_version || 'latest' }}-${{ runner.os }}
 
       - name: Load cached image
         run: |
@@ -58,7 +62,7 @@ jobs:
       - name: Save Docker image
         if: success()
         run: |
-          docker save lscr.io/linuxserver/firefox:latest -o /tmp/docker-image.tar || true
+          docker save lscr.io/linuxserver/firefox:${{ github.event.inputs.firefox_version || 'latest' }} -o /tmp/docker-image.tar || true
 
       - name: Setup nginx + login page
         env:

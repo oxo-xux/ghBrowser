@@ -63,54 +63,28 @@ jobs:
         run: |
           docker save lscr.io/linuxserver/firefox:${{ env.FIREFOX_VERSION }} -o /tmp/docker-image.tar || true
 
-      - name: Setup nginx + login page
+      - name: Setup auth proxy + login page
         env:
           WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
         run: |
-          sudo mkdir -p /etc/nginx/html
-          sudo apt-get update && sudo apt-get install -y nginx apache2-utils
+          sudo apt-get update && sudo apt-get install -y python3-pip
 
-          # Create htpasswd
-          echo "admin:${WPASSWORD}" | sudo htpasswd -ci /etc/nginx/.htpasswd admin
+          cat > /tmp/proxy.py << 'PYEOF'
+          import os
+          import hashlib
+          import secrets
+          import urllib.request
+          import urllib.error
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          from urllib.parse import urlparse
 
-          # Write nginx config
-          sudo tee /etc/nginx/sites-available/browser > /dev/null <<'NGINX'
-          server {
-              listen 8080;
+          PASSWORD = os.environ["PROXY_PASSWORD"]
+          SECRET = secrets.token_hex(32)
+          UPSTREAM = "http://127.0.0.1:3000"
 
-              # Serve login page WITHOUT auth
-              location = /login.html {
-                  auth_basic off;
-                  root /etc/nginx/html;
-              }
+          sessions = {}
 
-              location = /favicon.ico {
-                  auth_basic off;
-                  return 204;
-              }
-
-              # Everything else needs auth
-              location / {
-                  auth_basic "ghBrowser";
-                  auth_basic_user_file /etc/nginx/.htpasswd;
-
-                  # Show custom login page on 401
-                  error_page 401 = /login.html;
-
-                  proxy_pass http://127.0.0.1:3000;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_read_timeout 86400;
-              }
-          }
-          NGINX
-
-          # Write login page
-          sudo tee /etc/nginx/html/login.html > /dev/null <<'HTML'
-          <!DOCTYPE html>
+          LOGIN_HTML = r"""<!DOCTYPE html>
           <html lang="en">
           <head>
           <meta charset="UTF-8">
@@ -165,27 +139,137 @@ jobs:
           document.getElementById('form').addEventListener('submit',async e=>{
           e.preventDefault();
           const pw=document.getElementById('password').value;
-          const hash=btoa('admin:'+pw);
           try{
-          const r=await fetch('/',{headers:{'Authorization':'Basic '+hash}});
-          if(r.ok){window.location.href='/';}
+          const r=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+          const d=await r.json();
+          if(d.ok){window.location.href='/';}
           else{document.getElementById('error').style.display='block';}
           }catch(err){document.getElementById('error').style.display='block';}
           });
           </script>
           </body>
-          </html>
-          HTML
+          </html>"""
 
-          sudo rm -f /etc/nginx/sites-enabled/default
-          sudo ln -sf /etc/nginx/sites-available/browser /etc/nginx/sites-enabled/
-          sudo nginx -t
-          sudo systemctl restart nginx
+          def get_session(handler):
+              cookies = handler.headers.get("Cookie", "")
+              for c in cookies.split(";"):
+                  c = c.strip()
+                  if c.startswith("session="):
+                      token = c.split("=", 1)[1]
+                      if token in sessions:
+                          return token
+              return None
 
-          # Verify nginx is working
+          def proxy_request(handler, path, method):
+              url = f"{UPSTREAM}/{path}"
+              body = None
+              if "Content-Length" in handler.headers:
+                  body = handler.rfile.read(int(handler.headers["Content-Length"]))
+
+              headers = {}
+              for key in handler.headers:
+                  if key.lower() not in ("host", "cookie", "connection"):
+                      headers[key] = handler.headers[key]
+              headers["Host"] = "127.0.0.1:3000"
+
+              req = urllib.request.Request(url, data=body, headers=headers, method=method)
+              try:
+                  resp = urllib.request.urlopen(req, timeout=10)
+                  handler.send_response(resp.status)
+                  for key, val in resp.headers.items():
+                      if key.lower() not in ("transfer-encoding", "connection"):
+                          handler.send_header(key, val)
+                  handler.end_headers()
+                  handler.wfile.write(resp.read())
+              except urllib.error.HTTPError as e:
+                  handler.send_response(e.code)
+                  for key, val in e.headers.items():
+                      if key.lower() not in ("transfer-encoding", "connection"):
+                          handler.send_header(key, val)
+                  handler.end_headers()
+                  handler.wfile.write(e.read())
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, format, *args):
+                  print(f"[proxy] {args[0]}")
+
+              def do_GET(self):
+                  path = urlparse(self.path).path
+
+                  if path == "/auth/login":
+                      self.send_response(200)
+                      self.send_header("Content-Type", "text/html")
+                      self.end_headers()
+                      self.wfile.write(LOGIN_HTML.encode())
+                      return
+
+                  if path == "/favicon.ico":
+                      self.send_response(204)
+                      self.end_headers()
+                      return
+
+                  session = get_session(self)
+                  if not session:
+                      self.send_response(302)
+                      self.send_header("Location", "/auth/login")
+                      self.end_headers()
+                      return
+
+                  proxy_request(self, path.lstrip("/"), "GET")
+
+              def do_POST(self):
+                  path = urlparse(self.path).path
+
+                  if path == "/auth/login":
+                      length = int(self.headers.get("Content-Length", 0))
+                      body = self.rfile.read(length).decode()
+                      import json
+                      data = json.loads(body)
+                      if data.get("password") == PASSWORD:
+                          token = secrets.token_hex(32)
+                          sessions[token] = True
+                          self.send_response(200)
+                          self.send_header("Content-Type", "application/json")
+                          self.send_header("Set-Cookie",
+                              f"session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
+                          self.end_headers()
+                          self.wfile.write(b'{"ok":true}')
+                      else:
+                          self.send_response(401)
+                          self.send_header("Content-Type", "application/json")
+                          self.end_headers()
+                          self.wfile.write(b'{"ok":false}')
+                      return
+
+                  session = get_session(self)
+                  if not session:
+                      self.send_response(401)
+                      self.send_header("Content-Type", "application/json")
+                      self.end_headers()
+                      self.wfile.write(b'{"ok":false}')
+                      return
+
+                  proxy_request(self, path.lstrip("/"), "POST")
+
+              def do_PUT(self):    self.do_POST()
+              def do_DELETE(self): self.do_POST()
+              def do_PATCH(self):  self.do_POST()
+              def do_OPTIONS(self):
+                  self.send_response(200)
+                  self.end_headers()
+
+          if __name__ == "__main__":
+              print("[proxy] Starting on :8080")
+              server = HTTPServer(("0.0.0.0", 8080), Handler)
+              server.serve_forever()
+          PYEOF
+
+          PROXY_PASSWORD="$WPASSWORD" nohup python3 /tmp/proxy.py > /tmp/proxy.log 2>&1 &
           sleep 2
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/login.html 2>/dev/null || true)
-          echo "Nginx login page status: $STATUS"
+
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login)
+          echo "Proxy login page status: $STATUS"
+          cat /tmp/proxy.log
 
       - name: Install cloudflared
         run: |
@@ -205,14 +289,12 @@ jobs:
               echo "  ghBrowser is LIVE!"
               echo "==========================================="
               echo "  URL:      $URL"
-              echo "  Username: admin"
               echo "  Password: (your BASIC_AUTH_PASSWORD)"
               echo "==========================================="
               echo ""
               echo "## ghBrowser is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
-              echo "**Username:** admin" >> $GITHUB_STEP_SUMMARY
               echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY

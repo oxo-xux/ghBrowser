@@ -223,7 +223,7 @@ jobs:
                   resp = conn.getresponse()
 
                   self.send_response(resp.status)
-                  skip = {"transfer-encoding", "connection", "content-encoding"}
+                  skip = {"transfer-encoding", "connection"}
                   for k, v in resp.getheaders():
                       if k.lower() not in skip:
                           self.send_header(k, v)

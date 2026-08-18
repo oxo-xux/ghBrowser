@@ -67,14 +67,13 @@ jobs:
         env:
           WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
         run: |
-          sudo apt-get update && sudo apt-get install -y python3-pip
-
           cat > /tmp/proxy.py << 'PYEOF'
           import os
           import secrets
           import socket
           import select
           import json
+          import threading
           from http.server import HTTPServer, BaseHTTPRequestHandler
           from urllib.parse import urlparse
 
@@ -150,100 +149,160 @@ jobs:
           </body>
           </html>"""
 
-          def get_session_token(cookie_header):
+          def is_valid_session(cookie_header):
               if not cookie_header:
-                  return None
+                  return False
               for c in cookie_header.split(";"):
                   c = c.strip()
                   if c.startswith("session="):
-                      return c.split("=", 1)[1]
-              return None
-
-          def is_valid_session(cookie_header):
-              token = get_session_token(cookie_header)
-              return token and token in sessions
-
-          def send_response_raw(conn, code, headers_text):
-              status_map = {200: "OK", 302: "Found", 401: "Unauthorized"}
-              status = status_map.get(code, "OK")
-              resp = f"HTTP/1.1 {code} {status}\r\n{headers_text}\r\n\r\n"
-              conn.sendall(resp.encode())
-
-          def handle_http_request(conn, first_line, headers):
-              method, path, _ = first_line.split(" ", 2)
-              cookie = headers.get("cookie", "")
-              path_only = urlparse(path).path
-
-              if path_only == "/auth/login" and method == "GET":
-                  body = LOGIN_HTML.encode()
-                  hdrs = f"Content-Type: text/html\r\nContent-Length: {len(body)}"
-                  send_response_raw(conn, 200, hdrs)
-                  conn.sendall(body)
-                  return True
-
-              if path_only == "/favicon.ico":
-                  send_response_raw(conn, 204, "")
-                  return True
-
-              if path_only == "/auth/login" and method == "POST":
-                  cl = int(headers.get("content-length", 0))
-                  body = conn.recv(cl) if cl else b""
-                  data = json.loads(body)
-                  if data.get("password") == PASSWORD:
-                      token = secrets.token_hex(32)
-                      sessions[token] = True
-                      resp_body = b'{"ok":true}'
-                      hdrs = (f"Content-Type: application/json\r\n"
-                              f"Content-Length: {len(resp_body)}\r\n"
-                              f"Set-Cookie: session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
-                      send_response_raw(conn, 200, hdrs)
-                      conn.sendall(resp_body)
-                  else:
-                      resp_body = b'{"ok":false}'
-                      hdrs = f"Content-Type: application/json\r\nContent-Length: {len(resp_body)}"
-                      send_response_raw(conn, 401, hdrs)
-                      conn.sendall(resp_body)
-                  return True
-
-              if not is_valid_session(cookie):
-                  resp_body = b"Redirecting..."
-                  hdrs = f"Location: /auth/login\r\nContent-Length: {len(resp_body)}"
-                  send_response_raw(conn, 302, hdrs)
-                  conn.sendall(resp_body)
-                  return True
-
+                      return c.split("=", 1)[1] in sessions
               return False
 
-          def tunnel_to_upstream(client_conn, first_line, headers):
+          def build_raw_request(method, path, headers, body=b""):
+              raw = f"{method} {path} HTTP/1.1\r\n"
+              for k, v in headers.items():
+                  raw += f"{k}: {v}\r\n"
+              raw += "\r\n"
+              return raw.encode() + body
+
+          def raw_tunnel(client_sock, method, path, headers, body=b""):
               upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
               upstream.connect((UPSTREAM_HOST, UPSTREAM_PORT))
-              upstream.sendall((first_line + "\r\n").encode())
-              for k, v in headers.items():
-                  upstream.sendall(f"{k}: {v}\r\n".encode())
-              upstream.sendall(b"\r\n")
+              req = build_raw_request(method, path, headers, body)
+              upstream.sendall(req)
 
-              sockets = [client_conn, upstream]
+              socks = [client_sock, upstream]
               try:
                   while True:
-                      readable, _, exceptional = select.select(sockets, [], sockets, 30)
-                      if exceptional:
+                      r, _, x = select.select(socks, [], socks, 60)
+                      if x:
                           break
-                      for s in readable:
+                      if not r:
+                          break
+                      for s in r:
                           data = s.recv(65536)
                           if not data:
                               return
-                          if s is client_conn:
+                          if s is client_sock:
                               upstream.sendall(data)
                           else:
-                              client_conn.sendall(data)
+                              client_sock.sendall(data)
               except Exception:
                   pass
               finally:
                   upstream.close()
 
-          class ThreadingHTTPServer(HTTPServer):
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, fmt, *args):
+                  print(f"[proxy] {args[0]}")
+
+              def _cookie(self):
+                  return self.headers.get("Cookie", "")
+
+              def _forward(self, method):
+                  is_ws = "upgrade" in self.headers.get("Connection", "").lower()
+                  body = b""
+                  cl = int(self.headers.get("Content-Length", 0))
+                  if cl:
+                      body = self.rfile.read(cl)
+
+                  fwd_headers = {}
+                  for k in self.headers:
+                      if k.lower() not in ("host", "cookie", "transfer-encoding"):
+                          fwd_headers[k] = self.headers[k]
+                  fwd_headers["Host"] = "127.0.0.1:3000"
+
+                  if is_ws:
+                      raw_tunnel(self.connection, method, self.path, fwd_headers, body)
+                      self.close_connection = True
+                      return
+
+                  import http.client
+                  conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=10)
+                  conn.request(method, self.path, body=body, headers=fwd_headers)
+                  resp = conn.getresponse()
+
+                  self.send_response(resp.status)
+                  skip = {"transfer-encoding", "connection", "content-encoding"}
+                  for k, v in resp.getheaders():
+                      if k.lower() not in skip:
+                          self.send_header(k, v)
+                  self.end_headers()
+                  self.wfile.write(resp.read())
+                  conn.close()
+
+              def do_GET(self):
+                  p = urlparse(self.path).path
+
+                  if p == "/auth/login":
+                      data = LOGIN_HTML.encode()
+                      self.send_response(200)
+                      self.send_header("Content-Type", "text/html")
+                      self.send_header("Content-Length", len(data))
+                      self.end_headers()
+                      self.wfile.write(data)
+                      return
+
+                  if p == "/favicon.ico":
+                      self.send_response(204)
+                      self.end_headers()
+                      return
+
+                  if not is_valid_session(self._cookie()):
+                      self.send_response(302)
+                      self.send_header("Location", "/auth/login")
+                      self.end_headers()
+                      return
+
+                  self._forward("GET")
+
+              def do_POST(self):
+                  p = urlparse(self.path).path
+
+                  if p == "/auth/login":
+                      cl = int(self.headers.get("Content-Length", 0))
+                      body = self.rfile.read(cl).decode()
+                      data = json.loads(body)
+                      if data.get("password") == PASSWORD:
+                          token = secrets.token_hex(32)
+                          sessions[token] = True
+                          resp = b'{"ok":true}'
+                          self.send_response(200)
+                          self.send_header("Content-Type", "application/json")
+                          self.send_header("Content-Length", len(resp))
+                          self.send_header("Set-Cookie",
+                              f"session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
+                          self.end_headers()
+                          self.wfile.write(resp)
+                      else:
+                          resp = b'{"ok":false}'
+                          self.send_response(401)
+                          self.send_header("Content-Type", "application/json")
+                          self.send_header("Content-Length", len(resp))
+                          self.end_headers()
+                          self.wfile.write(resp)
+                      return
+
+                  if not is_valid_session(self._cookie()):
+                      resp = b'{"ok":false}'
+                      self.send_response(401)
+                      self.send_header("Content-Type", "application/json")
+                      self.send_header("Content-Length", len(resp))
+                      self.end_headers()
+                      self.wfile.write(resp)
+                      return
+
+                  self._forward("POST")
+
+              def do_PUT(self):    self._forward("PUT")
+              def do_DELETE(self): self._forward("DELETE")
+              def do_PATCH(self):  self._forward("PATCH")
+              def do_OPTIONS(self):
+                  self.send_response(200)
+                  self.end_headers()
+
+          class ThreadedHTTPServer(HTTPServer):
               def process_request(self, request, client_address):
-                  import threading
                   t = threading.Thread(target=self.process_request_thread, args=(request, client_address))
                   t.daemon = True
                   t.start()
@@ -256,126 +315,16 @@ jobs:
                   finally:
                       self.shutdown_request(request)
 
-          class RawHandler:
-              def handle(self):
-                  conn = self.request
-                  try:
-                      raw = b""
-                      while b"\r\n\r\n" not in raw:
-                          chunk = conn.recv(4096)
-                          if not chunk:
-                              return
-                          raw += chunk
-
-                      header_end = raw.index(b"\r\n\r\n") + 4
-                      header_bytes = raw[:header_end]
-                      remaining = raw[header_end:]
-
-                      lines = header_bytes.decode().split("\r\n")
-                      first_line = lines[0]
-                      headers = {}
-                      for line in lines[1:]:
-                          if ": " in line:
-                              k, v = line.split(": ", 1)
-                              headers[k.lower()] = v
-
-                      method = first_line.split(" ")[0]
-                      is_upgrade = "upgrade" in headers.get("connection", "").lower()
-
-                      if is_upgrade and is_valid_session(headers.get("cookie", "")):
-                          upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                          upstream.connect((UPSTREAM_HOST, UPSTREAM_PORT))
-                          upstream.sendall(header_bytes)
-                          if remaining:
-                              upstream.sendall(remaining)
-
-                          sockets = [conn, upstream]
-                          try:
-                              while True:
-                                  readable, _, exceptional = select.select(sockets, [], sockets, 30)
-                                  if exceptional:
-                                      break
-                                  for s in readable:
-                                      data = s.recv(65536)
-                                      if not data:
-                                          return
-                                      if s is conn:
-                                          upstream.sendall(data)
-                                      else:
-                                          conn.sendall(data)
-                          except Exception:
-                              pass
-                          finally:
-                              upstream.close()
-                      else:
-                          if handle_http_request(conn, first_line, headers):
-                              return
-                          upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                          upstream.connect((UPSTREAM_HOST, UPSTREAM_PORT))
-                          upstream.sendall(header_bytes)
-                          if remaining:
-                              upstream.sendall(remaining)
-
-                          sockets = [conn, upstream]
-                          try:
-                              while True:
-                                  readable, _, exceptional = select.select(sockets, [], sockets, 30)
-                                  if exceptional:
-                                      break
-                                  for s in readable:
-                                      data = s.recv(65536)
-                                      if not data:
-                                          return
-                                      if s is conn:
-                                          upstream.sendall(data)
-                                      else:
-                                          conn.sendall(data)
-                          except Exception:
-                              pass
-                          finally:
-                              upstream.close()
-                  except Exception as e:
-                      print(f"[proxy] Error: {e}")
-
-          class ProxyServer(ThreadingHTTPServer):
-              def __init__(self, addr, handler_class):
-                  super().__init__(addr, handler_class)
-                  self.daemon_threads = True
-
-              def get_request(self):
-                  conn, addr = self.socket.accept()
-                  return conn, addr
-
-              def process_request(self, request, client_address):
-                  import threading
-                  t = threading.Thread(target=self._handle_raw, args=(request, client_address))
-                  t.daemon = True
-                  t.start()
-
-              def _handle_raw(self, conn, addr):
-                  handler = RawHandler()
-                  handler.request = conn
-                  try:
-                      handler.handle()
-                  except Exception:
-                      pass
-                  finally:
-                      try:
-                          conn.close()
-                      except Exception:
-                          pass
-
           if __name__ == "__main__":
               print("[proxy] Starting on :8080")
-              server = ProxyServer(("0.0.0.0", 8080), None)
+              server = ThreadedHTTPServer(("0.0.0.0", 8080), Handler)
+              server.daemon_threads = True
               server.serve_forever()
           PYEOF
 
           PROXY_PASSWORD="$WPASSWORD" nohup python3 /tmp/proxy.py > /tmp/proxy.log 2>&1 &
           sleep 2
-
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login)
-          echo "Proxy login page status: $STATUS"
+          curl -s -o /dev/null -w "Login page: %{http_code}\n" http://localhost:8080/auth/login
           cat /tmp/proxy.log
 
       - name: Install cloudflared
@@ -386,6 +335,16 @@ jobs:
 
       - name: Start tunnel
         run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy healthy (attempt $i)"
+              break
+            fi
+            echo "Proxy not ready (attempt $i): $STATUS"
+            sleep 2
+          done
+
           ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
 
           for i in $(seq 1 60); do

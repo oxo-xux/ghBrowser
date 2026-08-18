@@ -1,0 +1,204 @@
+name: Run Browser
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration (minutes)"
+        required: false
+        default: "350"
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Firefox
+        run: |
+          docker run -d \
+            --name firefox \
+            --shm-size=2g \
+            -p 3000:3000 \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ=Etc/UTC \
+            -e TITLE=ghBrowser \
+            lscr.io/linuxserver/firefox:latest
+
+      - name: Wait for Firefox
+        run: |
+          echo "Waiting for Firefox..."
+          for i in $(seq 1 120); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
+              echo "Firefox ready (attempt $i)"
+              sleep 10
+              break
+            fi
+            echo "  attempt $i: $STATUS"
+            sleep 5
+          done
+
+      - name: Setup nginx + login page
+        env:
+          WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y nginx apache2-utils
+
+          # Create htpasswd
+          echo "admin:${WPASSWORD}" | sudo htpasswd -ci /etc/nginx/.htpasswd admin
+
+          # Write nginx config
+          sudo tee /etc/nginx/sites-available/browser > /dev/null <<'NGINX'
+          server {
+              listen 8080;
+
+              # Serve login page WITHOUT auth
+              location = /login.html {
+                  auth_basic off;
+                  root /etc/nginx/html;
+              }
+
+              location = /favicon.ico {
+                  auth_basic off;
+                  return 204;
+              }
+
+              # Everything else needs auth
+              location / {
+                  auth_basic "ghBrowser";
+                  auth_basic_user_file /etc/nginx/.htpasswd;
+
+                  # Show custom login page on 401
+                  error_page 401 = /login.html;
+
+                  proxy_pass http://127.0.0.1:3000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_read_timeout 86400;
+              }
+          }
+          NGINX
+
+          # Write login page
+          sudo tee /etc/nginx/html/login.html > /dev/null <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>ghBrowser - Sign In</title>
+          <style>
+          *{margin:0;padding:0;box-sizing:border-box}
+          body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+          background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);font-family:'Segoe UI',system-ui,sans-serif;color:#fff}
+          .card{background:rgba(255,255,255,.05);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.1);
+          border-radius:20px;padding:48px 40px;width:400px;box-shadow:0 25px 60px rgba(0,0,0,.5)}
+          .logo{text-align:center;margin-bottom:36px}
+          .logo svg{width:64px;height:64px;margin-bottom:16px}
+          .logo h1{font-size:28px;font-weight:700}
+          .logo p{color:rgba(255,255,255,.5);font-size:14px;margin-top:6px}
+          .form-group{margin-bottom:20px}
+          label{display:block;font-size:13px;color:rgba(255,255,255,.6);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+          input{width:100%;padding:14px 16px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);
+          border-radius:10px;color:#fff;font-size:16px;outline:none;transition:border-color .2s}
+          input:focus{border-color:#7c5cfc}
+          input::placeholder{color:rgba(255,255,255,.3)}
+          button{width:100%;padding:14px;background:linear-gradient(135deg,#7c5cfc,#a855f7);border:none;border-radius:10px;
+          color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:8px;transition:opacity .2s}
+          button:hover{opacity:.9}
+          .error{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:#f87171;padding:10px 14px;
+          border-radius:8px;font-size:14px;margin-bottom:16px;display:none}
+          .badge{text-align:center;margin-top:24px;font-size:12px;color:rgba(255,255,255,.3)}
+          </style>
+          </head>
+          <body>
+          <div class="card">
+          <div class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+          <path d="M2 12h20"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+          <h1>ghBrowser</h1>
+          <p>Private Cloud Browser</p>
+          </div>
+          <div class="error" id="error">Invalid password. Try again.</div>
+          <form id="form">
+          <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="password" placeholder="Enter password" autofocus required>
+          </div>
+          <button type="submit">Sign In</button>
+          </form>
+          <div class="badge">End-to-end encrypted session</div>
+          </div>
+          <script>
+          document.getElementById('form').addEventListener('submit',async e=>{
+          e.preventDefault();
+          const pw=document.getElementById('password').value;
+          const hash=btoa('admin:'+pw);
+          try{
+          const r=await fetch('/',{headers:{'Authorization':'Basic '+hash}});
+          if(r.ok){window.location.href='/';}
+          else{document.getElementById('error').style.display='block';}
+          }catch(err){document.getElementById('error').style.display='block';}
+          });
+          </script>
+          </body>
+          </html>
+          HTML
+
+          sudo rm -f /etc/nginx/sites-enabled/default
+          sudo ln -sf /etc/nginx/sites-available/browser /etc/nginx/sites-enabled/
+          sudo nginx -t
+          sudo systemctl restart nginx
+
+          # Verify nginx is working
+          sleep 2
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/login.html 2>/dev/null || true)
+          echo "Nginx login page status: $STATUS"
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Start tunnel
+        run: |
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              echo ""
+              echo "==========================================="
+              echo "  ghBrowser is LIVE!"
+              echo "==========================================="
+              echo "  URL:      $URL"
+              echo "  Username: admin"
+              echo "  Password: (your BASIC_AUTH_PASSWORD)"
+              echo "==========================================="
+              echo ""
+              echo "## ghBrowser is Live!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
+              echo "**Username:** admin" >> $GITHUB_STEP_SUMMARY
+              echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            sleep 5
+          done
+
+          DURATION=${{ github.event.inputs.duration || '350' }}
+          echo "Keeping alive for $DURATION minutes..."
+          sleep ${DURATION}m

@@ -14,35 +14,45 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Start webtop container
+      - uses: actions/checkout@v4
+
+      - name: Start Firefox container
         env:
           WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
         run: |
           docker run -d \
-            --name webtop \
+            --name firefox \
             --shm-size=2g \
             -p 3000:3000 \
+            -p 3001:3001 \
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Etc/UTC \
-            -e SUBFOLDER=/ \
             -e TITLE=ghBrowser \
-            -e "PASSWORD=$WPASSWORD" \
-            lscr.io/linuxserver/webtop:ubuntu-xfce
+            lscr.io/linuxserver/firefox:latest
 
-      - name: Wait for webtop
+      - name: Wait for Firefox
         run: |
-          echo "Waiting for webtop to start..."
+          echo "Waiting for Firefox to start..."
           for i in $(seq 1 120); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
             if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
-              echo "Webtop is ready! (attempt $i)"
-              sleep 15
+              echo "Firefox is ready! (attempt $i, status=$STATUS)"
+              sleep 10
               break
             fi
             echo "  attempt $i: status=$STATUS"
             sleep 5
           done
+
+      - name: Start auth proxy
+        env:
+          BASIC_AUTH_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+        run: |
+          python3 proxy.py &
+          sleep 2
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null || true)
+          echo "Auth proxy status: $STATUS"
 
       - name: Install cloudflared
         run: |
@@ -52,23 +62,25 @@ jobs:
 
       - name: Start Cloudflare Tunnel
         run: |
-          ./cloudflared tunnel --url http://localhost:3000 > tunnel.log 2>&1 &
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
 
           for i in $(seq 1 60); do
             if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
               TUNNEL_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
               echo ""
               echo "==========================================="
-              echo "  Browser is LIVE!"
+              echo "  ghBrowser is LIVE!"
               echo "==========================================="
               echo "  URL:      $TUNNEL_URL"
               echo "  Password: (your BASIC_AUTH_PASSWORD secret)"
+              echo "  Mode:     Private Browsing"
               echo "==========================================="
               echo ""
               echo "## ghBrowser is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL:** $TUNNEL_URL" >> $GITHUB_STEP_SUMMARY
               echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              echo "**Mode:** Private Browsing" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY
               break

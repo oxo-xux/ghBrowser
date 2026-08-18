@@ -1,0 +1,74 @@
+name: Auto Cleanup (7-day retention)
+
+on:
+  schedule:
+    - cron: '30 0 * * 0'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete completed workflow runs older than 7 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          REPO="${{ github.repository }}"
+          echo "Deleting completed workflow runs older than 7 days..."
+          PAGE=1
+          DELETED=0
+          SKIPPED=0
+          while :; do
+            RUNS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE" --jq '.workflow_runs[] | select(.created_at < (now - 604800 | todate)) | [.id, .status, .event, .created_at] | @tsv')
+            COUNT=$(echo "$RUNS" | sed '/^$/d' | wc -l)
+            [ "$COUNT" -eq 0 ] && break
+            while IFS=$'\t' read -r ID STATUS EVENT CREATED; do
+              if [ "$ID" = "$CURRENT_RUN_ID" ]; then
+                SKIPPED=$((SKIPPED + 1))
+                echo "Skipping current run $ID"
+                continue
+              fi
+              if [ "$STATUS" != "completed" ] && [ "$STATUS" != "failure" ] && [ "$STATUS" != "cancelled" ]; then
+                SKIPPED=$((SKIPPED + 1))
+                echo "Skipping in-progress run $ID ($STATUS)"
+                continue
+              fi
+              echo "Deleting run $ID ($EVENT, $CREATED)"
+              gh api -X DELETE "repos/$REPO/actions/runs/$ID" --silent && DELETED=$((DELETED + 1))
+            done <<< "$RUNS"
+            [ "$COUNT" -lt 100 ] && break
+            PAGE=$((PAGE + 1))
+          done
+          echo "Total runs deleted: $DELETED (skipped: $SKIPPED)"
+
+      - name: Checkout for history squash
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Squash commit history older than 7 days
+        env:
+          GIT_USER_NAME: ${{ secrets.GIT_USER_NAME }}
+          GIT_USER_EMAIL: ${{ secrets.GIT_USER_EMAIL }}
+        run: |
+          USER_NAME="${GIT_USER_NAME:-github-actions[bot]}"
+          USER_EMAIL="${GIT_USER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+          OLDEST_TS=$(git log --format=%ct | sort -n | head -1)
+          AGE=$(( $(date +%s) - OLDEST_TS ))
+          echo "Oldest commit age: $((AGE / 86400)) days."
+          if [ "$AGE" -le 604800 ]; then
+            echo "History is younger than 7 days. Skipping squash."
+            exit 0
+          fi
+          echo "History exceeds 7 days. Squashing into a single commit..."
+          git checkout --orphan squashed-tmp
+          git add -A
+          git -c user.name="$USER_NAME" -c user.email="$USER_EMAIL" commit -m "chore: squash history (7-day retention)"
+          git branch -D main
+          git branch -m main
+          git push --force origin main

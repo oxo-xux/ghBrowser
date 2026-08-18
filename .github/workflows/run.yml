@@ -42,10 +42,29 @@ jobs:
             sleep 5
           done
 
+      - name: Cache Docker image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-image.tar
+          key: firefox-latest-${{ runner.os }}
+
+      - name: Load cached image
+        run: |
+          if [ -f /tmp/docker-image.tar ]; then
+            echo "Loading cached Firefox image..."
+            docker load -i /tmp/docker-image.tar || true
+          fi
+
+      - name: Save Docker image
+        if: success()
+        run: |
+          docker save lscr.io/linuxserver/firefox:latest -o /tmp/docker-image.tar || true
+
       - name: Setup nginx + login page
         env:
           WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
         run: |
+          sudo mkdir -p /etc/nginx/html
           sudo apt-get update && sudo apt-get install -y nginx apache2-utils
 
           # Create htpasswd

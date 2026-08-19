@@ -9,7 +9,7 @@ on:
         default: "350"
 
 env:
-  FIREFOX_VERSION: latest
+  BROWSER: firefox
 
 jobs:
   browser:
@@ -19,25 +19,38 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Start Firefox
+      - name: Resolve image
+        id: resolve
+        run: |
+          case "${{ env.BROWSER }}" in
+            chrome)  IMAGE="lscr.io/linuxserver/webtop:chrome" ;;
+            brave)   IMAGE="lscr.io/linuxserver/webtop:brave" ;;
+            ubuntu)  IMAGE="lscr.io/linuxserver/webtop:ubuntu" ;;
+            debian)  IMAGE="lscr.io/linuxserver/webtop:debian" ;;
+            *)       IMAGE="lscr.io/linuxserver/firefox:latest" ;;
+          esac
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Browser: ${{ env.BROWSER }} -> $IMAGE"
+
+      - name: Start browser
         run: |
           docker run -d \
-            --name firefox \
+            --name browser \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Etc/UTC \
             -e TITLE=ghBrowser \
-            lscr.io/linuxserver/firefox:${{ env.FIREFOX_VERSION }}
+            ${{ steps.resolve.outputs.image }}
 
-      - name: Wait for Firefox
+      - name: Wait for browser
         run: |
-          echo "Waiting for Firefox..."
+          echo "Waiting for browser..."
           for i in $(seq 1 120); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
             if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
-              echo "Firefox ready (attempt $i)"
+              echo "Browser ready (attempt $i)"
               sleep 10
               break
             fi
@@ -49,19 +62,19 @@ jobs:
         uses: actions/cache@v5
         with:
           path: /tmp/docker-image.tar
-          key: firefox-${{ env.FIREFOX_VERSION }}-${{ runner.os }}
+          key: browser-${{ env.BROWSER }}-${{ runner.os }}
 
       - name: Load cached image
         run: |
           if [ -f /tmp/docker-image.tar ]; then
-            echo "Loading cached Firefox image..."
+            echo "Loading cached image..."
             docker load -i /tmp/docker-image.tar || true
           fi
 
       - name: Save Docker image
         if: success()
         run: |
-          docker save lscr.io/linuxserver/firefox:${{ env.FIREFOX_VERSION }} -o /tmp/docker-image.tar || true
+          docker save ${{ steps.resolve.outputs.image }} -o /tmp/docker-image.tar || true
 
       - name: Setup auth proxy + login page
         env:

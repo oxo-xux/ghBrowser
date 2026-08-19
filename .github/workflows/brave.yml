@@ -26,7 +26,18 @@ jobs:
             -e PGID=1000 \
             -e TZ=Etc/UTC \
             -e TITLE=ghBrowser \
-            lscr.io/linuxserver/webtop:brave
+            lscr.io/linuxserver/webtop:debian-xfce
+
+      - name: Install Brave
+        run: |
+          docker exec browser bash -c "
+            apt-get update && \
+            apt-get install -y curl apt-transport-https gnupg && \
+            curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg && \
+            echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main' > /etc/apt/sources.list.d/brave-browser-release.list && \
+            apt-get update && \
+            apt-get install -y brave-browser || true
+          "
 
       - name: Wait for browser
         run: |

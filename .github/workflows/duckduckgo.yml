@@ -1,4 +1,4 @@
-name: Chrome
+name: DuckDuckGo Browser
 
 on:
   workflow_dispatch:
@@ -25,8 +25,8 @@ jobs:
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Etc/UTC \
-            -e TITLE=ghBrowser \
-            lscr.io/linuxserver/chrome:latest
+            -e TITLE=ghBrowser-DuckDuckGo \
+            lscr.io/linuxserver/firefox:latest
 
       - name: Wait for browser
         run: |
@@ -41,6 +41,20 @@ jobs:
             echo "  attempt $i: $STATUS"
             sleep 5
           done
+
+      - name: Configure DuckDuckGo
+        run: |
+          docker exec browser bash -c '
+            mkdir -p /config/firefox/profiles/default/prefs.js
+            cat > /config/firefox/profiles/default/prefs.js << PREFS
+            user_pref("browser.startup.homepage", "https://duckduckgo.com");
+            user_pref("browser.search.defaultenginename", "DuckDuckGo");
+            user_pref("browser.search.selectedEngine", "DuckDuckGo");
+            user_pref("keyword.URL", "https://duckduckgo.com/?q=");
+            user_pref("browser.newtab.url", "https://duckduckgo.com");
+            PREFS
+            chown -R 1000:1000 /config
+          '
 
       - name: Setup auth proxy + login page
         env:
@@ -76,13 +90,13 @@ jobs:
               URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
               echo ""
               echo "==========================================="
-              echo "  ghBrowser (Chrome) is LIVE!"
+              echo "  ghBrowser (DuckDuckGo) is LIVE!"
               echo "==========================================="
               echo "  URL:      $URL"
               echo "  Password: (your BASIC_AUTH_PASSWORD)"
               echo "==========================================="
               echo ""
-              echo "## ghBrowser (Chrome) is Live!" >> $GITHUB_STEP_SUMMARY
+              echo "## ghBrowser (DuckDuckGo) is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
               echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY

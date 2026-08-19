@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '30 0 * * 0'
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Delete ALL runs (ignore 7-day limit)'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
   actions: write
@@ -19,8 +25,9 @@ jobs:
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           REPO="${{ github.repository }}"
+          FORCE="${{ inputs.force }}"
           CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
-          echo "Cutoff: $CUTOFF"
+          echo "Force: $FORCE | Cutoff: $CUTOFF"
           echo "Current run: $CURRENT_RUN_ID"
 
           PAGE=1
@@ -28,20 +35,23 @@ jobs:
           SKIPPED=0
 
           while :; do
-            RUNS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE&created_at=$CUTOFF" \
-              --jq ".workflow_runs[] | select(.created_at < \"$CUTOFF\") | [.id, .status] | @tsv" 2>/dev/null || true)
+            RUNS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE" \
+              --jq ".workflow_runs[] | [.id, .status, .created_at] | @tsv" 2>/dev/null || true)
 
             COUNT=$(echo "$RUNS" | grep -c '[0-9]' || true)
             [ "$COUNT" -eq 0 ] && break
 
-            while IFS=$'\t' read -r ID STATUS; do
+            while IFS=$'\t' read -r ID STATUS CREATED; do
               [ -z "$ID" ] && continue
               if [ "$ID" = "$CURRENT_RUN_ID" ]; then
                 SKIPPED=$((SKIPPED + 1))
                 echo "Skipping current run $ID"
                 continue
               fi
-              echo "Deleting run $ID (status: $STATUS)"
+              if [ "$FORCE" != "true" ] && [ "$(date -d "$CREATED" +%s)" -ge "$(date -d "$CUTOFF" +%s)" ]; then
+                continue
+              fi
+              echo "Deleting run $ID (created: $CREATED)"
               gh api -X DELETE "repos/$REPO/actions/runs/$ID" 2>/dev/null && DELETED=$((DELETED + 1)) || echo "  Failed to delete $ID"
             done <<< "$RUNS"
 

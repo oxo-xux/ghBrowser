@@ -42,24 +42,6 @@ jobs:
             sleep 5
           done
 
-      - name: Cache Docker image
-        uses: actions/cache@v5
-        with:
-          path: /tmp/docker-image.tar
-          key: browser-firefox-${{ runner.os }}
-
-      - name: Load cached image
-        run: |
-          if [ -f /tmp/docker-image.tar ]; then
-            echo "Loading cached image..."
-            docker load -i /tmp/docker-image.tar || true
-          fi
-
-      - name: Save Docker image
-        if: success()
-        run: |
-          docker save lscr.io/linuxserver/firefox:latest -o /tmp/docker-image.tar || true
-
       - name: Setup auth proxy + login page
         env:
           WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}

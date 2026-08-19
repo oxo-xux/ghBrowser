@@ -1,0 +1,371 @@
+name: Chrome
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration (minutes)"
+        required: false
+        default: "350"
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start browser
+        run: |
+          docker run -d \
+            --name browser \
+            --shm-size=2g \
+            -p 3000:3000 \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ=Etc/UTC \
+            -e TITLE=ghBrowser \
+            lscr.io/linuxserver/webtop:chrome
+
+      - name: Wait for browser
+        run: |
+          echo "Waiting for browser..."
+          for i in $(seq 1 120); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
+              echo "Browser ready (attempt $i)"
+              sleep 10
+              break
+            fi
+            echo "  attempt $i: $STATUS"
+            sleep 5
+          done
+
+      - name: Cache Docker image
+        uses: actions/cache@v5
+        with:
+          path: /tmp/docker-image.tar
+          key: browser-chrome-${{ runner.os }}
+
+      - name: Load cached image
+        run: |
+          if [ -f /tmp/docker-image.tar ]; then
+            echo "Loading cached image..."
+            docker load -i /tmp/docker-image.tar || true
+          fi
+
+      - name: Save Docker image
+        if: success()
+        run: |
+          docker save lscr.io/linuxserver/webtop:chrome -o /tmp/docker-image.tar || true
+
+      - name: Setup auth proxy + login page
+        env:
+          WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+        run: |
+          cat > /tmp/proxy.py << 'PYEOF'
+          import os
+          import secrets
+          import socket
+          import select
+          import json
+          import threading
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          from urllib.parse import urlparse
+
+          PASSWORD = os.environ["PROXY_PASSWORD"]
+          UPSTREAM_HOST = "127.0.0.1"
+          UPSTREAM_PORT = 3000
+
+          sessions = {}
+
+          LOGIN_HTML = r"""<!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>ghBrowser - Sign In</title>
+          <style>
+          *{margin:0;padding:0;box-sizing:border-box}
+          body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+          background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);font-family:'Segoe UI',system-ui,sans-serif;color:#fff}
+          .card{background:rgba(255,255,255,.05);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.1);
+          border-radius:20px;padding:48px 40px;width:400px;box-shadow:0 25px 60px rgba(0,0,0,.5)}
+          .logo{text-align:center;margin-bottom:36px}
+          .logo svg{width:64px;height:64px;margin-bottom:16px}
+          .logo h1{font-size:28px;font-weight:700}
+          .logo p{color:rgba(255,255,255,.5);font-size:14px;margin-top:6px}
+          .form-group{margin-bottom:20px}
+          label{display:block;font-size:13px;color:rgba(255,255,255,.6);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+          input{width:100%;padding:14px 16px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);
+          border-radius:10px;color:#fff;font-size:16px;outline:none;transition:border-color .2s}
+          input:focus{border-color:#7c5cfc}
+          input::placeholder{color:rgba(255,255,255,.3)}
+          button{width:100%;padding:14px;background:linear-gradient(135deg,#7c5cfc,#a855f7);border:none;border-radius:10px;
+          color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:8px;transition:opacity .2s}
+          button:hover{opacity:.9}
+          .error{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:#f87171;padding:10px 14px;
+          border-radius:8px;font-size:14px;margin-bottom:16px;display:none}
+          .badge{text-align:center;margin-top:24px;font-size:12px;color:rgba(255,255,255,.3)}
+          </style>
+          </head>
+          <body>
+          <div class="card">
+          <div class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+          <path d="M2 12h20"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+          <h1>ghBrowser</h1>
+          <p>Private Cloud Browser</p>
+          </div>
+          <div class="error" id="error">Invalid password. Try again.</div>
+          <form id="form">
+          <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="password" placeholder="Enter password" autofocus required>
+          </div>
+          <button type="submit">Sign In</button>
+          </form>
+          <div class="badge">End-to-end encrypted session</div>
+          </div>
+          <script>
+          document.getElementById('form').addEventListener('submit',async e=>{
+          e.preventDefault();
+          const pw=document.getElementById('password').value;
+          try{
+          const r=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+          const d=await r.json();
+          if(d.ok){window.location.href='/';}
+          else{document.getElementById('error').style.display='block';}
+          }catch(err){document.getElementById('error').style.display='block';}
+          });
+          </script>
+          </body>
+          </html>"""
+
+          def is_valid_session(cookie_header):
+              if not cookie_header:
+                  return False
+              for c in cookie_header.split(";"):
+                  c = c.strip()
+                  if c.startswith("session="):
+                      return c.split("=", 1)[1] in sessions
+              return False
+
+          def build_raw_request(method, path, headers, body=b""):
+              raw = f"{method} {path} HTTP/1.1\r\n"
+              for k, v in headers.items():
+                  raw += f"{k}: {v}\r\n"
+              raw += "\r\n"
+              return raw.encode() + body
+
+          def raw_tunnel(client_sock, method, path, headers, body=b""):
+              upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              upstream.connect((UPSTREAM_HOST, UPSTREAM_PORT))
+              req = build_raw_request(method, path, headers, body)
+              upstream.sendall(req)
+
+              socks = [client_sock, upstream]
+              try:
+                  while True:
+                      r, _, x = select.select(socks, [], socks, 60)
+                      if x:
+                          break
+                      if not r:
+                          break
+                      for s in r:
+                          data = s.recv(65536)
+                          if not data:
+                              return
+                          if s is client_sock:
+                              upstream.sendall(data)
+                          else:
+                              client_sock.sendall(data)
+              except Exception:
+                  pass
+              finally:
+                  upstream.close()
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, fmt, *args):
+                  print(f"[proxy] {args[0]}")
+
+              def _cookie(self):
+                  return self.headers.get("Cookie", "")
+
+              def _forward(self, method):
+                  is_ws = "upgrade" in self.headers.get("Connection", "").lower()
+                  body = b""
+                  cl = int(self.headers.get("Content-Length", 0))
+                  if cl:
+                      body = self.rfile.read(cl)
+
+                  fwd_headers = {}
+                  for k in self.headers:
+                      if k.lower() not in ("host", "cookie", "transfer-encoding"):
+                          fwd_headers[k] = self.headers[k]
+                  fwd_headers["Host"] = "127.0.0.1:3000"
+
+                  if is_ws:
+                      raw_tunnel(self.connection, method, self.path, fwd_headers, body)
+                      self.close_connection = True
+                      return
+
+                  import http.client
+                  conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=10)
+                  conn.request(method, self.path, body=body, headers=fwd_headers)
+                  resp = conn.getresponse()
+
+                  self.send_response(resp.status)
+                  skip = {"transfer-encoding", "connection"}
+                  for k, v in resp.getheaders():
+                      if k.lower() not in skip:
+                          self.send_header(k, v)
+                  self.end_headers()
+                  self.wfile.write(resp.read())
+                  conn.close()
+
+              def do_GET(self):
+                  p = urlparse(self.path).path
+
+                  if p == "/auth/login":
+                      data = LOGIN_HTML.encode()
+                      self.send_response(200)
+                      self.send_header("Content-Type", "text/html")
+                      self.send_header("Content-Length", len(data))
+                      self.end_headers()
+                      self.wfile.write(data)
+                      return
+
+                  if p == "/favicon.ico":
+                      self.send_response(204)
+                      self.end_headers()
+                      return
+
+                  if not is_valid_session(self._cookie()):
+                      self.send_response(302)
+                      self.send_header("Location", "/auth/login")
+                      self.end_headers()
+                      return
+
+                  self._forward("GET")
+
+              def do_POST(self):
+                  p = urlparse(self.path).path
+
+                  if p == "/auth/login":
+                      cl = int(self.headers.get("Content-Length", 0))
+                      body = self.rfile.read(cl).decode()
+                      data = json.loads(body)
+                      if data.get("password") == PASSWORD:
+                          token = secrets.token_hex(32)
+                          sessions[token] = True
+                          resp = b'{"ok":true}'
+                          self.send_response(200)
+                          self.send_header("Content-Type", "application/json")
+                          self.send_header("Content-Length", len(resp))
+                          self.send_header("Set-Cookie",
+                              f"session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
+                          self.end_headers()
+                          self.wfile.write(resp)
+                      else:
+                          resp = b'{"ok":false}'
+                          self.send_response(401)
+                          self.send_header("Content-Type", "application/json")
+                          self.send_header("Content-Length", len(resp))
+                          self.end_headers()
+                          self.wfile.write(resp)
+                      return
+
+                  if not is_valid_session(self._cookie()):
+                      resp = b'{"ok":false}'
+                      self.send_response(401)
+                      self.send_header("Content-Type", "application/json")
+                      self.send_header("Content-Length", len(resp))
+                      self.end_headers()
+                      self.wfile.write(resp)
+                      return
+
+                  self._forward("POST")
+
+              def do_PUT(self):    self._forward("PUT")
+              def do_DELETE(self): self._forward("DELETE")
+              def do_PATCH(self):  self._forward("PATCH")
+              def do_OPTIONS(self):
+                  self.send_response(200)
+                  self.end_headers()
+
+          class ThreadedHTTPServer(HTTPServer):
+              def process_request(self, request, client_address):
+                  t = threading.Thread(target=self.process_request_thread, args=(request, client_address))
+                  t.daemon = True
+                  t.start()
+
+              def process_request_thread(self, request, client_address):
+                  try:
+                      self.finish_request(request, client_address)
+                  except Exception:
+                      self.handle_error(request, client_address)
+                  finally:
+                      self.shutdown_request(request)
+
+          if __name__ == "__main__":
+              print("[proxy] Starting on :8080")
+              server = ThreadedHTTPServer(("0.0.0.0", 8080), Handler)
+              server.daemon_threads = True
+              server.serve_forever()
+          PYEOF
+
+          PROXY_PASSWORD="$WPASSWORD" nohup python3 /tmp/proxy.py > /tmp/proxy.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "Login page: %{http_code}\n" http://localhost:8080/auth/login
+          cat /tmp/proxy.log
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Start tunnel
+        run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy healthy (attempt $i)"
+              break
+            fi
+            echo "Proxy not ready (attempt $i): $STATUS"
+            sleep 2
+          done
+
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              echo ""
+              echo "==========================================="
+              echo "  ghBrowser (Chrome) is LIVE!"
+              echo "==========================================="
+              echo "  URL:      $URL"
+              echo "  Password: (your BASIC_AUTH_PASSWORD)"
+              echo "==========================================="
+              echo ""
+              echo "## ghBrowser (Chrome) is Live!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
+              echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            sleep 5
+          done
+
+          DURATION=${{ github.event.inputs.duration || '350' }}
+          echo "Keeping alive for $DURATION minutes..."
+          sleep ${DURATION}m

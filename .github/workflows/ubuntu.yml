@@ -1,4 +1,4 @@
-name: Run Browser
+name: Ubuntu
 
 on:
   workflow_dispatch:
@@ -8,9 +8,6 @@ on:
         required: false
         default: "350"
 
-env:
-  BROWSER: firefox
-
 jobs:
   browser:
     runs-on: ubuntu-latest
@@ -18,19 +15,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-
-      - name: Resolve image
-        id: resolve
-        run: |
-          case "${{ env.BROWSER }}" in
-            chrome)  IMAGE="lscr.io/linuxserver/webtop:chrome" ;;
-            brave)   IMAGE="lscr.io/linuxserver/webtop:brave" ;;
-            ubuntu)  IMAGE="lscr.io/linuxserver/webtop:ubuntu" ;;
-            debian)  IMAGE="lscr.io/linuxserver/webtop:debian" ;;
-            *)       IMAGE="lscr.io/linuxserver/firefox:latest" ;;
-          esac
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Browser: ${{ env.BROWSER }} -> $IMAGE"
 
       - name: Start browser
         run: |
@@ -42,7 +26,7 @@ jobs:
             -e PGID=1000 \
             -e TZ=Etc/UTC \
             -e TITLE=ghBrowser \
-            ${{ steps.resolve.outputs.image }}
+            lscr.io/linuxserver/webtop:ubuntu
 
       - name: Wait for browser
         run: |
@@ -62,7 +46,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: /tmp/docker-image.tar
-          key: browser-${{ env.BROWSER }}-${{ runner.os }}
+          key: browser-ubuntu-${{ runner.os }}
 
       - name: Load cached image
         run: |
@@ -74,7 +58,7 @@ jobs:
       - name: Save Docker image
         if: success()
         run: |
-          docker save ${{ steps.resolve.outputs.image }} -o /tmp/docker-image.tar || true
+          docker save lscr.io/linuxserver/webtop:ubuntu -o /tmp/docker-image.tar || true
 
       - name: Setup auth proxy + login page
         env:
@@ -365,13 +349,13 @@ jobs:
               URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
               echo ""
               echo "==========================================="
-              echo "  ghBrowser is LIVE!"
+              echo "  ghBrowser (Ubuntu) is LIVE!"
               echo "==========================================="
               echo "  URL:      $URL"
               echo "  Password: (your BASIC_AUTH_PASSWORD)"
               echo "==========================================="
               echo ""
-              echo "## ghBrowser is Live!" >> $GITHUB_STEP_SUMMARY
+              echo "## ghBrowser (Ubuntu) is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
               echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY

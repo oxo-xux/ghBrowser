@@ -117,14 +117,12 @@ jobs:
               echo "==========================================="
               echo "  ghBrowser (Roblox Sober) is LIVE!"
               echo "==========================================="
-              echo "  URL:      $URL/vnc_lite.html"
-              echo "  Password: (your BASIC_AUTH_PASSWORD)"
+              echo "  URL:      $URL/vnc_lite.html?password=headless"
               echo "==========================================="
               echo ""
               echo "## ghBrowser (Roblox Sober) is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**URL:** $URL/vnc_lite.html" >> $GITHUB_STEP_SUMMARY
-              echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              echo "**URL:** $URL/vnc_lite.html?password=headless" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**How to play:**" >> $GITHUB_STEP_SUMMARY
               echo "1. Open the URL and enter your password" >> $GITHUB_STEP_SUMMARY

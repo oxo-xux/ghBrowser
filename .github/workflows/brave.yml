@@ -25,7 +25,7 @@ jobs:
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Etc/UTC \
-            -e TITLE=ghBrowser \
+            -e TITLE=ghBrowser-Brave \
             lscr.io/linuxserver/brave:latest
 
       - name: Wait for browser

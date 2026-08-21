@@ -184,6 +184,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if p == "/":
+            self.send_response(302)
+            self.send_header("Location", "/vnc_lite.html?password=headless")
+            self.end_headers()
+            return
+
         self._forward("GET")
 
     def do_POST(self):

@@ -37,8 +37,8 @@ jobs:
             cd /tmp &&
             curl -fsSL https://www.torproject.org/dist/torbrowser/14.5.4/tor-browser-linux-x86_64-14.5.4_ALL.tar.xz -o tor.tar.xz &&
             tar xf tor.tar.xz &&
-            mv tor-browser_EN /home/abc/tor-browser &&
-            chown -R abc:abc /home/abc/tor-browser
+            mv tor-browser_EN /opt/tor-browser &&
+            chown -R abc:abc /opt/tor-browser
           '
           echo "Tor Browser installed"
 

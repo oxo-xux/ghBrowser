@@ -43,7 +43,7 @@ jobs:
 
       - name: Rename user to roblox
         run: |
-          docker exec browser bash -c '
+          docker exec -u root browser bash -c '
             usermod -l roblox headless &&
             groupmod -n roblox headless &&
             usermod -d /home/roblox -m roblox &&
@@ -52,8 +52,11 @@ jobs:
 
       - name: Install Sober (Flatpak)
         run: |
-          docker exec browser bash -c '
+          docker exec -u root browser bash -c '
+            mkdir -p /var/lib/apt/lists/partial &&
             apt-get update && apt-get install -y curl flatpak xdg-desktop-portal-gtk libgl1 libvulkan1 mesa-utils
+          '
+          docker exec browser bash -c '
             flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
             flatpak install -y flathub org.vinegarhq.Sober
           '

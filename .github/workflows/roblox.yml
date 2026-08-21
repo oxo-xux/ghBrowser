@@ -43,23 +43,6 @@ jobs:
             sleep 5
           done
 
-      - name: Configure Roblox
-        run: |
-          docker exec browser bash -c '
-            apt-get update && apt-get install -y curl &&
-            mkdir -p /config/chrome/Default &&
-            cat > /tmp/roblox.desktop << EOF
-            [Desktop Entry]
-            Type=Application
-            Name=Roblox
-            Exec=firefox https://now.gg/play/roblox-corporation/5349/roblox
-            Icon=firefox
-            EOF
-            cp /tmp/roblox.desktop /home/abc/Desktop/roblox.desktop &&
-            chmod +x /home/abc/Desktop/roblox.desktop &&
-            chown abc:abc /home/abc/Desktop/roblox.desktop
-          '
-
       - name: Rename user to roblox
         run: |
           docker exec browser bash -c '
@@ -68,6 +51,39 @@ jobs:
             usermod -d /home/roblox -m roblox &&
             chown -R roblox:roblox /home/roblox
           ' 2>/dev/null || true
+
+      - name: Configure Roblox
+        run: |
+          docker exec browser bash -c '
+            apt-get update && apt-get install -y curl
+
+            mkdir -p /config/Desktop
+            cat > /config/Desktop/roblox.desktop << EOF
+            [Desktop Entry]
+            Version=1.0
+            Type=Application
+            Name=Roblox
+            Comment=Play Roblox in Browser
+            Exec=firefox https://now.gg/play/roblox-corporation/5349/roblox
+            Icon=firefox
+            Terminal=false
+            EOF
+            chmod +x /config/Desktop/roblox.desktop
+            chown -R 1000:1000 /config/Desktop
+
+            mkdir -p /config/.config/autostart
+            cat > /config/.config/autostart/roblox-browser.desktop << EOF
+            [Desktop Entry]
+            Version=1.0
+            Type=Application
+            Name=Roblox Browser
+            Exec=firefox https://now.gg/play/roblox-corporation/5349/roblox
+            Terminal=false
+            X-GNOME-Autostart-enabled=true
+            EOF
+            chmod +x /config/.config/autostart/roblox-browser.desktop
+            chown -R 1000:1000 /config/.config/autostart
+          '
 
       - name: Setup auth proxy + login page
         env:

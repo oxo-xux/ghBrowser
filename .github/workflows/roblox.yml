@@ -55,7 +55,7 @@ jobs:
       - name: Configure Roblox
         run: |
           docker exec browser bash -c '
-            apt-get update && apt-get install -y curl
+            apt-get update && apt-get install -y curl firefox
 
             mkdir -p /config/Desktop
             cat > /config/Desktop/roblox.desktop << EOF
@@ -64,9 +64,10 @@ jobs:
             Type=Application
             Name=Roblox
             Comment=Play Roblox in Browser
-            Exec=firefox https://now.gg/play/roblox-corporation/5349/roblox
+            Exec=/usr/bin/firefox https://now.gg/play/roblox-corporation/5349/roblox
             Icon=firefox
             Terminal=false
+            Categories=Game;
             EOF
             chmod +x /config/Desktop/roblox.desktop
             chown -R 1000:1000 /config/Desktop
@@ -77,7 +78,7 @@ jobs:
             Version=1.0
             Type=Application
             Name=Roblox Browser
-            Exec=firefox https://now.gg/play/roblox-corporation/5349/roblox
+            Exec=/usr/bin/firefox https://now.gg/play/roblox-corporation/5349/roblox
             Terminal=false
             X-GNOME-Autostart-enabled=true
             EOF
@@ -131,9 +132,9 @@ jobs:
               echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**How to play:**" >> $GITHUB_STEP_SUMMARY
-              echo "1. Open the URL and login" >> $GITHUB_STEP_SUMMARY
-              echo "2. Double-click the Roblox icon on the desktop" >> $GITHUB_STEP_SUMMARY
-              echo "3. Login with your Roblox account" >> $GITHUB_STEP_SUMMARY
+              echo "1. Open the URL and login with your password" >> $GITHUB_STEP_SUMMARY
+              echo "2. Double-click the 'Roblox' icon on the desktop" >> $GITHUB_STEP_SUMMARY
+              echo "3. Login with your Roblox account on now.gg" >> $GITHUB_STEP_SUMMARY
               echo "4. Pick a game and play!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY

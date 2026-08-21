@@ -1,0 +1,100 @@
+name: Windows 11
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration (minutes)"
+        required: false
+        default: "350"
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start Windows 11
+        run: |
+          docker run -d \
+            --name browser \
+            --shm-size=2g \
+            -p 3000:8006 \
+            -e VERSION=11 \
+            -e KVM=N \
+            -e RAM_SIZE=4G \
+            -e CPU_CORES=2 \
+            dockurr/windows
+
+      - name: Wait for Windows to boot
+        run: |
+          echo "Waiting for Windows to install and boot (this may take 30-60 minutes)..."
+          for i in $(seq 1 360); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Windows ready (attempt $i)"
+              sleep 30
+              break
+            fi
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "  Still waiting... (attempt $i, status: $STATUS)"
+            fi
+            sleep 10
+          done
+
+      - name: Setup auth proxy + login page
+        env:
+          WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+        run: |
+          PROXY_PASSWORD="$WPASSWORD" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "Login page: %{http_code}\n" http://localhost:8080/auth/login
+          cat /tmp/proxy.log
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Start tunnel
+        run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy healthy (attempt $i)"
+              break
+            fi
+            echo "Proxy not ready (attempt $i): $STATUS"
+            sleep 2
+          done
+
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              echo ""
+              echo "==========================================="
+              echo "  ghBrowser (Windows 11) is LIVE!"
+              echo "==========================================="
+              echo "  URL:      $URL"
+              echo "  Password: (your BASIC_AUTH_PASSWORD)"
+              echo "==========================================="
+              echo ""
+              echo "## ghBrowser (Windows 11) is Live!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
+              echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            sleep 5
+          done
+
+          DURATION=${{ github.event.inputs.duration || '350' }}
+          echo "Keeping alive for $DURATION minutes..."
+          sleep ${DURATION}m

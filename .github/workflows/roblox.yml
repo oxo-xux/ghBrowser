@@ -17,15 +17,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Start desktop
-        env:
-          VNC_PW: ${{ secrets.BASIC_AUTH_PASSWORD }}
         run: |
           docker run -d \
             --name browser \
             --hostname roblox \
             --shm-size=2g \
             -p 3000:6901 \
-            -e VNC_PW="$VNC_PW" \
+            -e VNC_PW=headless \
             -e TZ=Etc/UTC \
             accetto/ubuntu-vnc-xfce-g3:24.04
 

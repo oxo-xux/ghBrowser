@@ -20,6 +20,7 @@ jobs:
         run: |
           docker run -d \
             --name browser \
+            --hostname duckduckgo \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -41,6 +42,15 @@ jobs:
             echo "  attempt $i: $STATUS"
             sleep 5
           done
+
+      - name: Rename user to duckduckgo
+        run: |
+          docker exec browser bash -c '
+            usermod -l duckduckgo abc &&
+            groupmod -n duckduckgo abc &&
+            usermod -d /home/duckduckgo -m duckduckgo &&
+            chown -R duckduckgo:duckduckgo /home/duckduckgo
+          ' 2>/dev/null || true
 
       - name: Configure DuckDuckGo
         run: |

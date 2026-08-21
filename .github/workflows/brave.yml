@@ -20,6 +20,7 @@ jobs:
         run: |
           docker run -d \
             --name browser \
+            --hostname brave \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -41,6 +42,15 @@ jobs:
             echo "  attempt $i: $STATUS"
             sleep 5
           done
+
+      - name: Rename user to brave
+        run: |
+          docker exec browser bash -c '
+            usermod -l brave abc &&
+            groupmod -n brave abc &&
+            usermod -d /home/brave -m brave &&
+            chown -R brave:brave /home/brave
+          ' 2>/dev/null || true
 
       - name: Setup auth proxy + login page
         env:

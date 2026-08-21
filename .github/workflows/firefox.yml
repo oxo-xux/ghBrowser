@@ -20,6 +20,7 @@ jobs:
         run: |
           docker run -d \
             --name browser \
+            --hostname firefox \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -41,6 +42,15 @@ jobs:
             echo "  attempt $i: $STATUS"
             sleep 5
           done
+
+      - name: Rename user to firefox
+        run: |
+          docker exec browser bash -c '
+            usermod -l firefox abc &&
+            groupmod -n firefox abc &&
+            usermod -d /home/firefox -m firefox &&
+            chown -R firefox:firefox /home/firefox
+          ' 2>/dev/null || true
 
       - name: Setup auth proxy + login page
         env:

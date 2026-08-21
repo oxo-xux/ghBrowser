@@ -20,6 +20,7 @@ jobs:
         run: |
           docker run -d \
             --name browser \
+            --hostname chrome \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -41,6 +42,15 @@ jobs:
             echo "  attempt $i: $STATUS"
             sleep 5
           done
+
+      - name: Rename user to chrome
+        run: |
+          docker exec browser bash -c '
+            usermod -l chrome abc &&
+            groupmod -n chrome abc &&
+            usermod -d /home/chrome -m chrome &&
+            chown -R chrome:chrome /home/chrome
+          ' 2>/dev/null || true
 
       - name: Setup auth proxy + login page
         env:

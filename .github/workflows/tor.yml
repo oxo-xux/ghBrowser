@@ -20,6 +20,7 @@ jobs:
         run: |
           docker run -d \
             --name browser \
+            --hostname tor \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -55,6 +56,16 @@ jobs:
             echo "  attempt $i: $STATUS"
             sleep 5
           done
+
+      - name: Rename user to tor
+        run: |
+          docker exec browser bash -c '
+            usermod -l tor abc &&
+            groupmod -n tor abc &&
+            usermod -d /home/tor -m tor &&
+            chown -R tor:tor /home/tor &&
+            chown -R tor:tor /opt/tor-browser
+          ' 2>/dev/null || true
 
       - name: Setup auth proxy + login page
         env:

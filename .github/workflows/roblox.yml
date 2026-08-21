@@ -22,13 +22,10 @@ jobs:
             --name browser \
             --hostname roblox \
             --shm-size=2g \
-            --device=/dev/dri:/dev/dri \
-            -p 3000:3000 \
-            -e PUID=1000 \
-            -e PGID=1000 \
+            -p 3000:6901 \
+            -e VNC_PW=headless \
             -e TZ=Etc/UTC \
-            -e TITLE=ghBrowser-Roblox \
-            lscr.io/linuxserver/webtop:ubuntu-kde
+            accetto/ubuntu-vnc-xfce-g3:24.04
 
       - name: Wait for desktop
         run: |
@@ -47,8 +44,8 @@ jobs:
       - name: Rename user to roblox
         run: |
           docker exec browser bash -c '
-            usermod -l roblox abc &&
-            groupmod -n roblox abc &&
+            usermod -l roblox headless &&
+            groupmod -n roblox headless &&
             usermod -d /home/roblox -m roblox &&
             chown -R roblox:roblox /home/roblox
           ' 2>/dev/null || true
@@ -65,8 +62,8 @@ jobs:
       - name: Configure Sober + Desktop
         run: |
           docker exec browser bash -c '
-            mkdir -p /config/.var/app/org.vinegarhq.Sober/config/sober
-            cat > /config/.var/app/org.vinegarhq.Sober/config/sober/config.json << EOF
+            mkdir -p /home/roblox/.var/app/org.vinegarhq.Sober/config/sober
+            cat > /home/roblox/.var/app/org.vinegarhq.Sober/config/sober/config.json << EOF
             {
               "use_opengl": true,
               "fflags": {
@@ -75,10 +72,10 @@ jobs:
               }
             }
             EOF
-            chown -R 1000:1000 /config/.var/app/org.vinegarhq.Sober
+            chown -R roblox:roblox /home/roblox/.var/app
 
-            mkdir -p /config/Desktop
-            cat > /config/Desktop/roblox.desktop << EOF
+            mkdir -p /home/roblox/Desktop
+            cat > /home/roblox/Desktop/roblox.desktop << EOF
             [Desktop Entry]
             Version=1.0
             Type=Application
@@ -89,21 +86,8 @@ jobs:
             Terminal=false
             Categories=Game;
             EOF
-            chmod +x /config/Desktop/roblox.desktop
-            chown -R 1000:1000 /config/Desktop
-
-            mkdir -p /config/.config/autostart
-            cat > /config/.config/autostart/roblox-sober.desktop << EOF
-            [Desktop Entry]
-            Version=1.0
-            Type=Application
-            Name=Roblox Sober
-            Exec=/usr/bin/flatpak run org.vinegarhq.Sober
-            Terminal=false
-            X-GNOME-Autostart-enabled=true
-            EOF
-            chmod +x /config/.config/autostart/roblox-sober.desktop
-            chown -R 1000:1000 /config/.config/autostart
+            chmod +x /home/roblox/Desktop/roblox.desktop
+            chown -R roblox:roblox /home/roblox/Desktop
           '
 
       - name: Setup auth proxy + login page

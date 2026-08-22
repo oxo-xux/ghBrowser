@@ -46,12 +46,7 @@ jobs:
             printf "headless" | vncpasswd -f > /home/debian/.vnc/passwd
             chmod 600 /home/debian/.vnc/passwd
 
-            cat > /home/debian/.vnc/xstartup << EOF
-#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-exec dbus-launch --exit-with-session startxfce4
-EOF
+            printf '%s\n' '#!/bin/sh' 'unset SESSION_MANAGER' 'unset DBUS_SESSION_BUS_ADDRESS' 'exec dbus-launch --exit-with-session startxfce4' > /home/debian/.vnc/xstartup
             chmod +x /home/debian/.vnc/xstartup
             chown -R debian:debian /home/debian
 

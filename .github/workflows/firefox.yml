@@ -1,5 +1,7 @@
 name: Firefox
 
+run-name: "ghBrowser Firefox ${{ inputs.session_id }}"
+
 on:
   workflow_dispatch:
     inputs:
@@ -17,6 +19,18 @@ on:
           - none
       vnc_password:
         description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
+        required: false
+        default: ""
+      session_id:
+        description: "Bot session id (for run tracking)"
+        required: false
+        default: ""
+      callback_url:
+        description: "n8n webhook to notify when tunnel is live"
+        required: false
+        default: ""
+      callback_secret:
+        description: "Shared secret for callback auth"
         required: false
         default: ""
 
@@ -148,6 +162,32 @@ jobs:
             fi
             sleep 5
           done
+
+          if [ -n "${URL:-}" ]; then
+            echo "TUNNEL_URL=$URL" >> $GITHUB_ENV
+          fi
+
+          if [ -n "${{ github.event.inputs.callback_url }}" ] && [ -n "${URL:-}" ]; then
+            echo "Notifying bot callback..."
+            PAYLOAD=$(jq -n \
+              --arg secret "${{ inputs.callback_secret }}" \
+              --arg session "${{ inputs.session_id }}" \
+              --argjson run "${{ github.run_id }}" \
+              --arg browser "Firefox" \
+              --arg url "$URL" \
+              --arg auth "${{ inputs.auth_mode }}" \
+              --arg dur "$DURATION" \
+              '{secret:$secret, session_id:$session, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, duration_min:($dur|tonumber)}')
+            for attempt in 1 2 3; do
+              if curl -fsSL -m 20 -X POST "${{ inputs.callback_url }}" \
+                -H 'Content-Type: application/json' -d "$PAYLOAD"; then
+                echo "Callback delivered (attempt $attempt)"
+                break
+              fi
+              echo "Callback failed (attempt $attempt), retrying..."
+              sleep 10
+            done
+          fi
 
           echo "Keeping alive for $DURATION minutes..."
           sleep ${DURATION}m

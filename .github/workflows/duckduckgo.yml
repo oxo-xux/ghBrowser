@@ -27,6 +27,7 @@ jobs:
             -e PGID=1000 \
             -e TZ=Etc/UTC \
             -e TITLE=ghBrowser-DuckDuckGo \
+            -e FIREFOX_CLI=https://duckduckgo.com \
             lscr.io/linuxserver/firefox:latest
 
       - name: Wait for browser
@@ -53,12 +54,60 @@ jobs:
           ' 2>/dev/null || true
 
       - name: Configure DuckDuckGo
+        # No official DuckDuckGo browser for Linux (Windows/Mac/Android/iOS only),
+        # so ship DDG-hardened Firefox: DDG homepage + default search + DDG extension
+        # via Enterprise Policy (profile-independent, survives restarts).
         run: |
-          docker exec browser bash -c "
-            mkdir -p /config/firefox/profiles/default &&
-            printf '%s\n' 'user_pref(\"browser.startup.homepage\", \"https://duckduckgo.com\");' 'user_pref(\"browser.search.defaultenginename\", \"DuckDuckGo\");' 'user_pref(\"browser.search.selectedEngine\", \"DuckDuckGo\");' 'user_pref(\"keyword.URL\", \"https://duckduckgo.com/?q=\");' 'user_pref(\"browser.newtab.url\", \"https://duckduckgo.com\");' > /config/firefox/profiles/default/prefs.js &&
-            chown -R 1000:1000 /config
-          "
+          mkdir -p tmp
+          cat > tmp/duck-policies.json <<'EOF'
+          {
+            "policies": {
+              "Homepage": {
+                "URL": "https://duckduckgo.com",
+                "StartPage": "homepage"
+              },
+              "SearchEngines": {
+                "Default": "DuckDuckGo"
+              },
+              "Extensions": {
+                "Install": [
+                  "https://addons.mozilla.org/firefox/downloads/latest/duckduckgo-for-firefox/latest.xpi"
+                ]
+              },
+              "DisableTelemetry": true,
+              "DontCheckDefaultBrowser": true
+            }
+          }
+          EOF
+          cat tmp/duck-policies.json
+          python3 -c "import json; json.load(open('tmp/duck-policies.json')); print('policies.json valid')"
+
+          FFDIR=$(docker exec browser bash -c 'dirname "$(readlink -f "$(which firefox)")"' | tr -d '\r\n')
+          echo "Firefox dir: $FFDIR"
+
+          docker exec browser bash -c 'mkdir -p /etc/firefox/policies'
+          docker cp tmp/duck-policies.json browser:/etc/firefox/policies/policies.json
+          docker exec browser bash -c 'chmod 644 /etc/firefox/policies/policies.json && cat /etc/firefox/policies/policies.json'
+
+          # Mirror to install-dir distribution/ as fallback (path varies by distro)
+          if [ -n "$FFDIR" ]; then
+            docker exec browser bash -c "mkdir -p '$FFDIR/distribution' && cp /etc/firefox/policies/policies.json '$FFDIR/distribution/policies.json' && chmod 644 '$FFDIR/distribution/policies.json'" || true
+          fi
+
+          # Restart Firefox so policies + extension apply
+          docker exec browser bash -c 'pkill firefox || true'
+          echo "Waiting for browser restart..."
+          sleep 10
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
+              echo "Browser back (attempt $i)"
+              break
+            fi
+            echo "  attempt $i: $STATUS"
+            sleep 5
+          done
+          docker exec browser bash -c 'cat /etc/firefox/policies/policies.json'
 
       - name: Setup auth proxy + login page
         env:

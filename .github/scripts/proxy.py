@@ -7,7 +7,8 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-PASSWORD = os.environ["PROXY_PASSWORD"]
+PASSWORD = os.environ.get("PROXY_PASSWORD", "")
+AUTH_REQUIRED = bool(PASSWORD)
 UPSTREAM_HOST = "127.0.0.1"
 UPSTREAM_PORT = 3000
 
@@ -178,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        if not is_valid_session(self._cookie()):
+        if AUTH_REQUIRED and not is_valid_session(self._cookie()):
             self.send_response(302)
             self.send_header("Location", "/auth/login")
             self.end_headers()
@@ -190,6 +191,15 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
 
         if p == "/auth/login":
+            if not AUTH_REQUIRED:
+                # passwordless mode: instantly "logged in"
+                resp = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", len(resp))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
             cl = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(cl).decode()
             data = json.loads(body)
@@ -214,6 +224,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not is_valid_session(self._cookie()):
+            if not AUTH_REQUIRED:
+                self._forward("POST")
+                return
             resp = b'{"ok":false}'
             self.send_response(401)
             self.send_header("Content-Type", "application/json")
@@ -246,7 +259,7 @@ class ThreadedHTTPServer(HTTPServer):
             self.shutdown_request(request)
 
 if __name__ == "__main__":
-    print("[proxy] Starting on :8080")
+    print(f"[proxy] Starting on :8080 (auth: {'password' if AUTH_REQUIRED else 'NONE - open access'})")
     server = ThreadedHTTPServer(("0.0.0.0", 8080), Handler)
     server.daemon_threads = True
     server.serve_forever()

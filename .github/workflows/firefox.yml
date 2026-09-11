@@ -4,9 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: "Run duration (minutes)"
+        description: "Run duration in minutes (5-360)"
         required: false
-        default: "350"
+        default: "60"
+      auth_mode:
+        description: "VNC login page protection"
+        required: false
+        default: "password"
+        type: choice
+        options:
+          - password
+          - none
+      vnc_password:
+        description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
+        required: false
+        default: ""
 
 jobs:
   browser:
@@ -54,8 +66,25 @@ jobs:
 
       - name: Setup auth proxy + login page
         env:
-          WPASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          INPUT_PASSWORD: ${{ inputs.vnc_password }}
+          FALLBACK_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
         run: |
+          WPASSWORD="$INPUT_PASSWORD"
+          if [ "$AUTH_MODE" = "none" ]; then
+            WPASSWORD=""
+          elif [ -z "$WPASSWORD" ]; then
+            WPASSWORD="$FALLBACK_PASSWORD"
+          fi
+          if [ -z "$WPASSWORD" ] && [ "$AUTH_MODE" != "none" ]; then
+            echo "ERROR: auth_mode=password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
+            exit 1
+          fi
+          if [ "$AUTH_MODE" = "none" ]; then
+            echo "Auth mode: NONE (open access, no password)"
+          else
+            echo "Auth mode: password protected"
+          fi
           PROXY_PASSWORD="$WPASSWORD" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
           sleep 2
           curl -s -o /dev/null -w "Login page: %{http_code}\n" http://localhost:8080/auth/login
@@ -69,6 +98,11 @@ jobs:
 
       - name: Start tunnel
         run: |
+          DURATION=${{ github.event.inputs.duration || '60' }}
+          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || [ "$DURATION" -lt 5 ]; then DURATION=5; fi
+          if [ "$DURATION" -gt 360 ]; then DURATION=360; fi
+          echo "Session duration: $DURATION minutes (auth: ${{ github.event.inputs.auth_mode || 'password' }})"
+
           for i in $(seq 1 10); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
             if [ "$STATUS" = "200" ]; then
@@ -89,20 +123,31 @@ jobs:
               echo "  ghBrowser (Firefox) is LIVE!"
               echo "==========================================="
               echo "  URL:      $URL"
-              echo "  Password: (your BASIC_AUTH_PASSWORD)"
+              if [ "${{ github.event.inputs.auth_mode }}" = "none" ]; then
+                echo "  Password: (none - open access)"
+              elif [ -n "${{ github.event.inputs.vnc_password }}" ]; then
+                echo "  Password: (per-session password, sent to requester)"
+              else
+                echo "  Password: (your BASIC_AUTH_PASSWORD)"
+              fi
               echo "==========================================="
               echo ""
               echo "## ghBrowser (Firefox) is Live!" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
-              echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              if [ "${{ github.event.inputs.auth_mode }}" = "none" ]; then
+                echo "**Password:** none (open access)" >> $GITHUB_STEP_SUMMARY
+              elif [ -n "${{ github.event.inputs.vnc_password }}" ]; then
+                echo "**Password:** per-session (sent to requester)" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
+              fi
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "Expires in ${{ github.event.inputs.duration || '350' }} minutes." >> $GITHUB_STEP_SUMMARY
+              echo "Expires in $DURATION minutes." >> $GITHUB_STEP_SUMMARY
               break
             fi
             sleep 5
           done
 
-          DURATION=${{ github.event.inputs.duration || '350' }}
           echo "Keeping alive for $DURATION minutes..."
           sleep ${DURATION}m

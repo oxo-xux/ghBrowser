@@ -134,30 +134,10 @@ jobs:
           for i in $(seq 1 60); do
             if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
               URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
-              echo ""
-              echo "==========================================="
-              echo "  ghBrowser (Firefox) is LIVE!"
-              echo "==========================================="
-              echo "  URL:      $URL"
-              if [ "${{ github.event.inputs.auth_mode }}" = "none" ]; then
-                echo "  Password: (none - open access)"
-              elif [ -n "${{ github.event.inputs.vnc_password }}" ]; then
-                echo "  Password: (per-session password, sent to requester)"
-              else
-                echo "  Password: (your BASIC_AUTH_PASSWORD)"
-              fi
-              echo "==========================================="
-              echo ""
-              echo "## ghBrowser (Firefox) is Live!" >> $GITHUB_STEP_SUMMARY
+              echo "Tunnel is live. Link + credentials sent privately to the requester."
+              echo "## ghBrowser (Firefox) session live" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
-              if [ "${{ github.event.inputs.auth_mode }}" = "none" ]; then
-                echo "**Password:** none (open access)" >> $GITHUB_STEP_SUMMARY
-              elif [ -n "${{ github.event.inputs.vnc_password }}" ]; then
-                echo "**Password:** per-session (sent to requester)" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "**Password:** \`BASIC_AUTH_PASSWORD\` secret" >> $GITHUB_STEP_SUMMARY
-              fi
+              echo "Session `${{ inputs.session_id }}` is live. Link + credentials delivered privately to the requester." >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "Expires in $DURATION minutes." >> $GITHUB_STEP_SUMMARY
               break
@@ -165,11 +145,11 @@ jobs:
             sleep 5
           done
 
-          if [ -n "${URL:-}" ]; then
-            echo "TUNNEL_URL=$URL" >> $GITHUB_ENV
+          CALLBACK_URL="${{ github.event.inputs.callback_url }}"
+          if [ -z "$CALLBACK_URL" ]; then
+            CALLBACK_URL="${{ secrets.GHBROWSER_CALLBACK_URL }}"
           fi
-
-          if [ -n "${{ github.event.inputs.callback_url }}" ] && [ -n "${URL:-}" ]; then
+          if [ -n "$CALLBACK_URL" ] && [ -n "${URL:-}" ]; then
             echo "Notifying bot callback..."
             CB_SECRET="${{ secrets.GHBROWSER_CALLBACK_SECRET }}"
             if [ -z "$CB_SECRET" ]; then
@@ -185,7 +165,7 @@ jobs:
               --arg dur "$DURATION" \
               '{secret:$secret, session_id:$session, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, duration_min:($dur|tonumber)}')
             for attempt in 1 2 3; do
-              if curl -fsSL -m 20 -X POST "${{ inputs.callback_url }}" \
+              if curl -fsSL -m 20 -X POST "$CALLBACK_URL" \
                 -H 'Content-Type: application/json' \
                 -H "X-Ghbrowser-Secret: $CB_SECRET" -d "$PAYLOAD"; then
                 echo "Callback delivered (attempt $attempt)"

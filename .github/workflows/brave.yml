@@ -41,7 +41,7 @@ jobs:
       - name: Start browser
         run: |
           for i in 1 2 3 4 5; do
-            if docker pull lscr.io/linuxserver/brave:latest; then break; fi
+            if docker pull -q lscr.io/linuxserver/brave:latest > /dev/null 2>&1; then break; fi
             echo "image pull failed (attempt $i/5), retrying..."
             sleep $((i * 20))
             if [ "$i" = "5" ]; then echo "ERROR: could not pull browser image"; exit 1; fi
@@ -59,15 +59,13 @@ jobs:
 
       - name: Wait for browser
         run: |
-          echo "Waiting for browser..."
           for i in $(seq 1 120); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
             if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
-              echo "Browser ready (attempt $i)"
+              echo "Browser ready."
               sleep 10
               break
             fi
-            echo "  attempt $i: $STATUS"
             sleep 5
           done
 
@@ -96,15 +94,12 @@ jobs:
             echo "ERROR: auth_mode=password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
             exit 1
           fi
-          if [ "$AUTH_MODE" = "none" ]; then
-            echo "Auth mode: NONE (open access, no password)"
-          else
-            echo "Auth mode: password protected"
+          if [ -n "$WPASSWORD" ]; then
+            echo "::add-mask::$WPASSWORD"
           fi
           PROXY_PASSWORD="$WPASSWORD" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
           sleep 2
-          curl -s -o /dev/null -w "Login page: %{http_code}\n" http://localhost:8080/auth/login
-          cat /tmp/proxy.log
+          curl -s -o /dev/null -w "Login page ready.\n" http://localhost:8080/auth/login
 
       - name: Install cloudflared
         run: |
@@ -117,15 +112,13 @@ jobs:
           DURATION=${{ github.event.inputs.duration || '60' }}
           if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || [ "$DURATION" -lt 5 ]; then DURATION=5; fi
           if [ "$DURATION" -gt 360 ]; then DURATION=360; fi
-          echo "Session duration: $DURATION minutes (auth: ${{ github.event.inputs.auth_mode || 'password' }})"
 
           for i in $(seq 1 10); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
             if [ "$STATUS" = "200" ]; then
-              echo "Proxy healthy (attempt $i)"
+              echo "Proxy ready."
               break
             fi
-            echo "Proxy not ready (attempt $i): $STATUS"
             sleep 2
           done
 
@@ -134,6 +127,7 @@ jobs:
           for i in $(seq 1 60); do
             if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
               URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              echo "::add-mask::$URL"
               echo "Tunnel is live. Link + credentials sent privately to the requester."
               echo "## ghBrowser (Brave) session live" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY

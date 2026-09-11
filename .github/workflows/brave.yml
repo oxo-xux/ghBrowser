@@ -1,6 +1,6 @@
 name: Brave
 
-run-name: "ghBrowser Brave ${{ inputs.session_id }}"
+run-name: "GB Brave"
 
 on:
   workflow_dispatch:

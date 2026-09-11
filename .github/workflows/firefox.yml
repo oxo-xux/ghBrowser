@@ -1,6 +1,6 @@
 name: Firefox
 
-run-name: "ghBrowser Firefox ${{ inputs.session_id }}"
+run-name: "GB Firefox"
 
 on:
   workflow_dispatch:

@@ -29,10 +29,6 @@ on:
         description: "n8n webhook to notify when tunnel is live"
         required: false
         default: ""
-      callback_secret:
-        description: "Shared secret for callback auth"
-        required: false
-        default: ""
 
 jobs:
   browser:
@@ -169,8 +165,12 @@ jobs:
 
           if [ -n "${{ github.event.inputs.callback_url }}" ] && [ -n "${URL:-}" ]; then
             echo "Notifying bot callback..."
+            CB_SECRET="${{ secrets.GHBROWSER_CALLBACK_SECRET }}"
+            if [ -z "$CB_SECRET" ]; then
+              echo "WARNING: GHBROWSER_CALLBACK_SECRET repo secret not set, skipping callback"
+            else
             PAYLOAD=$(jq -n \
-              --arg secret "${{ inputs.callback_secret }}" \
+              --arg secret "$CB_SECRET" \
               --arg session "${{ inputs.session_id }}" \
               --argjson run "${{ github.run_id }}" \
               --arg browser "Firefox" \
@@ -180,13 +180,16 @@ jobs:
               '{secret:$secret, session_id:$session, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, duration_min:($dur|tonumber)}')
             for attempt in 1 2 3; do
               if curl -fsSL -m 20 -X POST "${{ inputs.callback_url }}" \
-                -H 'Content-Type: application/json' -d "$PAYLOAD"; then
+                -H 'Content-Type: application/json' \
+                -H "X-Ghbrowser-Secret: $CB_SECRET" -d "$PAYLOAD"; then
                 echo "Callback delivered (attempt $attempt)"
                 break
               fi
               echo "Callback failed (attempt $attempt), retrying..."
               sleep 10
             done
+            unset CB_SECRET PAYLOAD
+            fi
           fi
 
           echo "Keeping alive for $DURATION minutes..."

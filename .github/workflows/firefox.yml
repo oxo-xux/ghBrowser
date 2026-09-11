@@ -40,6 +40,12 @@ jobs:
 
       - name: Start browser
         run: |
+          for i in 1 2 3 4 5; do
+            if docker pull lscr.io/linuxserver/firefox:latest; then break; fi
+            echo "image pull failed (attempt $i/5), retrying..."
+            sleep $((i * 20))
+            if [ "$i" = "5" ]; then echo "ERROR: could not pull browser image"; exit 1; fi
+          done
           docker run -d \
             --name browser \
             --hostname firefox \

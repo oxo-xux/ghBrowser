@@ -25,8 +25,12 @@ on:
         description: "Bot session id (for run tracking)"
         required: false
         default: ""
+      user_id:
+        description: "Discord user id (for DM delivery)"
+        required: false
+        default: ""
       callback_url:
-        description: "n8n webhook to notify when tunnel is live"
+        description: "Fixed n8n webhook https://n8n.aam.sryze.cc/webhook/ghbrowser-deliver (or override)"
         required: false
         default: ""
 
@@ -152,12 +156,14 @@ jobs:
             PAYLOAD=$(jq -n \
               --arg secret "$CB_SECRET" \
               --arg session "${{ inputs.session_id }}" \
+              --arg user "${{ inputs.user_id }}" \
               --argjson run "${{ github.run_id }}" \
               --arg browser "Firefox" \
               --arg url "$URL" \
               --arg auth "${{ inputs.auth_mode }}" \
               --arg dur "$DURATION" \
-              '{secret:$secret, session_id:$session, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, duration_min:($dur|tonumber)}')
+              --arg status "live" \
+              '{secret:$secret, session_id:$session, user_id:$user, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, duration_min:($dur|tonumber), status:$status}')
             for attempt in 1 2 3; do
               if curl -fsSL -m 20 -X POST "$CALLBACK_URL" \
                 -H 'Content-Type: application/json' \

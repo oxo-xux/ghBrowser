@@ -1,0 +1,83 @@
+name: Clean History
+
+run-name: "GB Clean"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DELETE-ALL to confirm wiping run history'
+        required: true
+        default: ""
+      session_id:
+        description: "Bot session id (for run tracking)"
+        required: false
+        default: ""
+      user_id:
+        description: "Discord user id (for tracking)"
+        required: false
+        default: ""
+
+permissions:
+  actions: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Delete all completed workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DELETE-ALL" ]; then
+            echo "ERROR: confirm must be DELETE-ALL (got '$CONFIRM'). Aborting, nothing deleted."
+            exit 1
+          fi
+          REPO="${{ github.repository }}"
+          DELETED=0
+          SKIPPED=0
+
+          while :; do
+            RUNS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=1" \
+              --jq ".workflow_runs[] | [.id, .status] | @tsv" 2>/dev/null || true)
+
+            COUNT=$(echo "$RUNS" | grep -c '[0-9]' || true)
+            [ "$COUNT" -eq 0 ] && break
+
+            BATCH_DELETED=0
+            while IFS=$'\t' read -r ID STATUS; do
+              [ -z "$ID" ] && continue
+              if [ "$ID" = "$CURRENT_RUN_ID" ]; then
+                SKIPPED=$((SKIPPED + 1))
+                echo "Skipping current run $ID"
+                continue
+              fi
+              if [ "$STATUS" != "completed" ]; then
+                SKIPPED=$((SKIPPED + 1))
+                echo "Skipping $STATUS run $ID (only completed history is wiped)"
+                continue
+              fi
+              if gh api -X DELETE "repos/$REPO/actions/runs/$ID" 2>/dev/null; then
+                DELETED=$((DELETED + 1))
+                BATCH_DELETED=$((BATCH_DELETED + 1))
+              else
+                echo "  Failed to delete $ID"
+              fi
+            done <<< "$RUNS"
+
+            # Always re-read page 1 since deletions shift the list.
+            # Stop if a full pass deleted nothing (only skippable runs left).
+            [ "$BATCH_DELETED" -eq 0 ] && break
+          done
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Deleted: $DELETED"
+          echo "Skipped (current/in-progress/queued): $SKIPPED"
+          echo "## GB Clean (session \`${{ inputs.session_id }}\`)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deleted $DELETED completed runs. Skipped $SKIPPED (current run + live sessions untouched)." >> $GITHUB_STEP_SUMMARY

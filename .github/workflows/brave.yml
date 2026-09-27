@@ -1,0 +1,216 @@
+name: Brave
+
+run-name: "GB Brave"
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration in minutes (5-360)"
+        required: false
+        default: "60"
+      auth_mode:
+        description: "VNC login page protection"
+        required: false
+        default: "password"
+        type: choice
+        options:
+          - password
+          - none
+      vnc_password:
+        description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
+        required: false
+        default: ""
+      session_id:
+        description: "Bot session id (for run tracking)"
+        required: false
+        default: ""
+      user_id:
+        description: "Discord user id (for DM delivery)"
+        required: false
+        default: ""
+      callback_url:
+        description: "Fixed n8n webhook https://n8n.aam.sryze.cc/webhook/ghbrowser-deliver (or override)"
+        required: false
+        default: ""
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start browser
+        run: |
+          for i in 1 2 3 4 5; do
+            if docker pull -q lscr.io/linuxserver/brave:latest > /dev/null 2>&1; then break; fi
+            echo "image pull failed (attempt $i/5), retrying..."
+            sleep $((i * 20))
+            if [ "$i" = "5" ]; then echo "ERROR: could not pull browser image"; exit 1; fi
+          done
+          docker run -d \
+            --name browser \
+            --hostname brave \
+            --shm-size=2g \
+            -p 3000:3000 \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ=Etc/UTC \
+            -e TITLE=ghBrowser-Brave \
+            lscr.io/linuxserver/brave:latest
+
+      - name: Wait for browser
+        run: |
+          for i in $(seq 1 120); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
+              echo "Browser ready."
+              sleep 10
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Rename user to brave
+        run: |
+          docker exec browser bash -c '
+            usermod -l brave abc &&
+            groupmod -n brave abc &&
+            usermod -d /home/brave -m brave &&
+            chown -R brave:brave /home/brave
+          ' 2>/dev/null || true
+
+      - name: Setup auth proxy + login page
+        env:
+          INPUT_PASSWORD: ${{ inputs.vnc_password }}
+          FALLBACK_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          WPASSWORD="$INPUT_PASSWORD"
+          if [ "$AUTH_MODE" = "none" ]; then
+            WPASSWORD=""
+          elif [ -z "$WPASSWORD" ]; then
+            WPASSWORD="$FALLBACK_PASSWORD"
+          fi
+          if [ -z "$WPASSWORD" ] && [ "$AUTH_MODE" != "none" ]; then
+            echo "ERROR: auth_mode=password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
+            exit 1
+          fi
+          if [ -n "$WPASSWORD" ]; then
+            echo "::add-mask::$WPASSWORD"
+          fi
+          PROXY_PASSWORD="$WPASSWORD" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "Login page ready.\n" http://localhost:8080/auth/login
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Start tunnel
+        run: |
+          DURATION=${{ github.event.inputs.duration || '60' }}
+          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || [ "$DURATION" -lt 5 ]; then DURATION=5; fi
+          if [ "$DURATION" -gt 360 ]; then DURATION=360; fi
+
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy ready."
+              break
+            fi
+            sleep 2
+          done
+
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              echo "::add-mask::$URL"
+              echo "Tunnel is live. Link + credentials sent privately to the requester."
+              echo "## ghBrowser (Brave) session live" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Session `${{ inputs.session_id }}` is live. Link + credentials delivered privately to the requester." >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Expires in $DURATION minutes." >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            sleep 5
+          done
+
+          CALLBACK_URL="${{ github.event.inputs.callback_url }}"
+          if [ -z "$CALLBACK_URL" ]; then
+            CALLBACK_URL="${{ secrets.GHBROWSER_CALLBACK_URL }}"
+          fi
+          # Display password for the DM: user's own password if given,
+          # otherwise the default. Never the repo fallback secret.
+          PW_DISPLAY="${{ inputs.vnc_password }}"
+          if [ -z "$PW_DISPLAY" ]; then
+            PW_DISPLAY="pass123"
+          fi
+          echo "::add-mask::$PW_DISPLAY"
+          if [ -n "$CALLBACK_URL" ] && [ -n "${URL:-}" ]; then
+            echo "Notifying bot callback..."
+            CB_SECRET="${{ secrets.GHBROWSER_CALLBACK_SECRET }}"
+            if [ -z "$CB_SECRET" ]; then
+              echo "WARNING: GHBROWSER_CALLBACK_SECRET repo secret not set, skipping callback"
+            else
+            PAYLOAD=$(jq -n \
+              --arg secret "$CB_SECRET" \
+              --arg session "${{ inputs.session_id }}" \
+              --arg user "${{ inputs.user_id }}" \
+              --argjson run "${{ github.run_id }}" \
+              --arg browser "Brave" \
+              --arg url "$URL" \
+              --arg auth "${{ inputs.auth_mode }}" \
+              --arg pw "$PW_DISPLAY" \
+              --arg dur "$DURATION" \
+              --arg status "live" \
+              '{secret:$secret, session_id:$session, user_id:$user, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, password:$pw, duration_min:($dur|tonumber), status:$status}')
+            for attempt in 1 2 3; do
+              if curl -fsSL -m 20 -X POST "$CALLBACK_URL" \
+                -H 'Content-Type: application/json' \
+                -H "X-Ghbrowser-Secret: $CB_SECRET" -d "$PAYLOAD"; then
+                echo "Callback delivered (attempt $attempt)"
+                break
+              fi
+              echo "Callback failed (attempt $attempt), retrying..."
+              sleep 10
+            done
+            unset CB_SECRET PAYLOAD
+            fi
+          fi
+
+          echo "Keeping alive for $DURATION minutes..."
+          sleep ${DURATION}m
+
+          # Session over: tell n8n so the DM flips to deleted.
+          DELIVER_URL="${{ github.event.inputs.callback_url }}"
+          if [ -z "$DELIVER_URL" ]; then
+            DELIVER_URL="${{ secrets.GHBROWSER_CALLBACK_URL }}"
+          fi
+          if [ -n "$DELIVER_URL" ]; then
+            CB_SECRET2="${{ secrets.GHBROWSER_CALLBACK_SECRET }}"
+            if [ -n "$CB_SECRET2" ]; then
+              echo "Notifying session end..."
+              END_PAYLOAD=$(jq -n \
+                --arg secret "$CB_SECRET2" \
+                --arg session "${{ inputs.session_id }}" \
+                --arg user "${{ inputs.user_id }}" \
+                --argjson run "${{ github.run_id }}" \
+                --arg browser "Brave" \
+                --arg dur "$DURATION" \
+                --arg status "deleted" \
+                '{secret:$secret, session_id:$session, user_id:$user, run_id:$run, browser:$browser, duration_min:($dur|tonumber), status:$status}')
+              curl -fsSL -m 15 -X POST "$DELIVER_URL" \
+                -H 'Content-Type: application/json' \
+                -H "X-Ghbrowser-Secret: $CB_SECRET2" -d "$END_PAYLOAD" \
+                && echo "End callback delivered" || echo "End callback failed (best effort)"
+              unset CB_SECRET2 END_PAYLOAD
+            fi
+          fi

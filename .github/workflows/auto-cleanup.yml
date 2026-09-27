@@ -1,0 +1,89 @@
+name: Auto Cleanup (7-day retention)
+
+on:
+  schedule:
+    - cron: '30 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Delete ALL runs (ignore 7-day limit)'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs older than 7 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          REPO="${{ github.repository }}"
+          FORCE="${{ inputs.force }}"
+          CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          echo "Force: $FORCE | Cutoff: $CUTOFF"
+          echo "Current run: $CURRENT_RUN_ID"
+
+          PAGE=1
+          DELETED=0
+          SKIPPED=0
+
+          while :; do
+            RUNS=$(gh api "repos/$REPO/actions/runs?per_page=100&page=$PAGE" \
+              --jq ".workflow_runs[] | [.id, .status, .created_at] | @tsv" 2>/dev/null || true)
+
+            COUNT=$(echo "$RUNS" | grep -c '[0-9]' || true)
+            [ "$COUNT" -eq 0 ] && break
+
+            while IFS=$'\t' read -r ID STATUS CREATED; do
+              [ -z "$ID" ] && continue
+              if [ "$ID" = "$CURRENT_RUN_ID" ]; then
+                SKIPPED=$((SKIPPED + 1))
+                echo "Skipping current run $ID"
+                continue
+              fi
+              if [ "$FORCE" != "true" ] && [ "$(date -d "$CREATED" +%s)" -ge "$(date -d "$CUTOFF" +%s)" ]; then
+                continue
+              fi
+              echo "Deleting run $ID (created: $CREATED)"
+              gh api -X DELETE "repos/$REPO/actions/runs/$ID" 2>/dev/null && DELETED=$((DELETED + 1)) || echo "  Failed to delete $ID"
+            done <<< "$RUNS"
+
+            [ "$COUNT" -lt 100 ] && break
+            PAGE=$((PAGE + 1))
+          done
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Deleted: $DELETED"
+          echo "Skipped: $SKIPPED"
+
+      - name: Checkout for history squash
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Squash commit history older than 7 days
+        run: |
+          OLDEST_TS=$(git log --format=%ct | sort -n | head -1)
+          AGE=$(( $(date +%s) - OLDEST_TS ))
+          echo "Oldest commit age: $((AGE / 86400)) days."
+
+          if [ "$AGE" -le 604800 ]; then
+            echo "History younger than 7 days. Skipping squash."
+            exit 0
+          fi
+
+          echo "Squashing history..."
+          git checkout --orphan squashed-tmp
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "chore: squash history (7-day retention)"
+          git branch -D main
+          git branch -m main
+          git push --force origin main

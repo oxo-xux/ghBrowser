@@ -10,7 +10,7 @@ on:
         required: false
         default: "60"
       auth_mode:
-        description: "VNC login page protection"
+        description: "Login page protection"
         required: false
         default: "password"
         type: choice
@@ -19,18 +19,6 @@ on:
           - none
       vnc_password:
         description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
-        required: false
-        default: ""
-      session_id:
-        description: "Bot session id (for run tracking)"
-        required: false
-        default: ""
-      user_id:
-        description: "Discord user id (for DM delivery)"
-        required: false
-        default: ""
-      callback_url:
-        description: "Fixed n8n webhook https://n8n.aam.sryze.cc/webhook/ghbrowser-deliver (or override)"
         required: false
         default: ""
 
@@ -128,89 +116,51 @@ jobs:
 
           ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
 
+          URL=""
           for i in $(seq 1 60); do
             if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
               URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
-              echo "::add-mask::$URL"
-              echo "Tunnel is live. Link + credentials sent privately to the requester."
-              echo "## ghBrowser (Firefox) session live" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "Session `${{ inputs.session_id }}` is live. Link + credentials delivered privately to the requester." >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "Expires in $DURATION minutes." >> $GITHUB_STEP_SUMMARY
               break
             fi
             sleep 5
           done
 
-          CALLBACK_URL="${{ github.event.inputs.callback_url }}"
-          if [ -z "$CALLBACK_URL" ]; then
-            CALLBACK_URL="${{ secrets.GHBROWSER_CALLBACK_URL }}"
+          if [ -z "$URL" ]; then
+            echo "ERROR: tunnel URL not found. cloudflared log:"
+            cat tunnel.log || true
+            exit 1
           fi
-          # Display password for the DM: user's own password if given,
-          # otherwise the default. Never the repo fallback secret.
-          PW_DISPLAY="${{ inputs.vnc_password }}"
-          if [ -z "$PW_DISPLAY" ]; then
-            PW_DISPLAY="pass123"
+
+          echo ""
+          echo "=================================================="
+          echo "Browser URL: $URL"
+          if [ "${{ inputs.auth_mode }}" = "none" ]; then
+            echo "Password: none (open access)"
+          elif [ -n "${{ inputs.vnc_password }}" ]; then
+            echo "Password: <the vnc_password you entered>"
+          else
+            echo "Password: <your BASIC_AUTH_PASSWORD secret>"
           fi
-          echo "::add-mask::$PW_DISPLAY"
-          if [ -n "$CALLBACK_URL" ] && [ -n "${URL:-}" ]; then
-            echo "Notifying bot callback..."
-            CB_SECRET="${{ secrets.GHBROWSER_CALLBACK_SECRET }}"
-            if [ -z "$CB_SECRET" ]; then
-              echo "WARNING: GHBROWSER_CALLBACK_SECRET repo secret not set, skipping callback"
+          echo "Expires in $DURATION minutes."
+          echo "=================================================="
+          echo ""
+
+          {
+            echo "## ghBrowser (Firefox) session live"
+            echo ""
+            echo "**URL:** $URL"
+            echo ""
+            if [ "${{ inputs.auth_mode }}" = "none" ]; then
+              echo "**Password:** none (open access)"
+            elif [ -n "${{ inputs.vnc_password }}" ]; then
+              echo "**Password:** the vnc_password you entered at dispatch"
             else
-            PAYLOAD=$(jq -n \
-              --arg secret "$CB_SECRET" \
-              --arg session "${{ inputs.session_id }}" \
-              --arg user "${{ inputs.user_id }}" \
-              --argjson run "${{ github.run_id }}" \
-              --arg browser "Firefox" \
-              --arg url "$URL" \
-              --arg auth "${{ inputs.auth_mode }}" \
-              --arg pw "$PW_DISPLAY" \
-              --arg dur "$DURATION" \
-              --arg status "live" \
-              '{secret:$secret, session_id:$session, user_id:$user, run_id:$run, browser:$browser, url:$url, auth_mode:$auth, password:$pw, duration_min:($dur|tonumber), status:$status}')
-            for attempt in 1 2 3; do
-              if curl -fsSL -m 20 -X POST "$CALLBACK_URL" \
-                -H 'Content-Type: application/json' \
-                -H "X-Ghbrowser-Secret: $CB_SECRET" -d "$PAYLOAD"; then
-                echo "Callback delivered (attempt $attempt)"
-                break
-              fi
-              echo "Callback failed (attempt $attempt), retrying..."
-              sleep 10
-            done
-            unset CB_SECRET PAYLOAD
+              echo "**Password:** your BASIC_AUTH_PASSWORD secret"
             fi
-          fi
+            echo ""
+            echo "Expires in $DURATION minutes."
+          } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Keeping alive for $DURATION minutes..."
-          sleep ${DURATION}m
-
-          # Session over: tell n8n so the DM flips to deleted.
-          DELIVER_URL="${{ github.event.inputs.callback_url }}"
-          if [ -z "$DELIVER_URL" ]; then
-            DELIVER_URL="${{ secrets.GHBROWSER_CALLBACK_URL }}"
-          fi
-          if [ -n "$DELIVER_URL" ]; then
-            CB_SECRET2="${{ secrets.GHBROWSER_CALLBACK_SECRET }}"
-            if [ -n "$CB_SECRET2" ]; then
-              echo "Notifying session end..."
-              END_PAYLOAD=$(jq -n \
-                --arg secret "$CB_SECRET2" \
-                --arg session "${{ inputs.session_id }}" \
-                --arg user "${{ inputs.user_id }}" \
-                --argjson run "${{ github.run_id }}" \
-                --arg browser "Firefox" \
-                --arg dur "$DURATION" \
-                --arg status "deleted" \
-                '{secret:$secret, session_id:$session, user_id:$user, run_id:$run, browser:$browser, duration_min:($dur|tonumber), status:$status}')
-              curl -fsSL -m 15 -X POST "$DELIVER_URL" \
-                -H 'Content-Type: application/json' \
-                -H "X-Ghbrowser-Secret: $CB_SECRET2" -d "$END_PAYLOAD" \
-                && echo "End callback delivered" || echo "End callback failed (best effort)"
-              unset CB_SECRET2 END_PAYLOAD
-            fi
-          fi
+          sleep "${DURATION}m"
+          echo "Session ended."

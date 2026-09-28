@@ -9,14 +9,6 @@ on:
         description: 'Type DELETE-ALL to confirm wiping run history'
         required: true
         default: ""
-      session_id:
-        description: "Bot session id (for run tracking)"
-        required: false
-        default: ""
-      user_id:
-        description: "Discord user id (for tracking)"
-        required: false
-        default: ""
 
 permissions:
   actions: write
@@ -78,6 +70,6 @@ jobs:
           echo "=== Summary ==="
           echo "Deleted: $DELETED"
           echo "Skipped (current/in-progress/queued): $SKIPPED"
-          echo "## GB Clean (session \`${{ inputs.session_id }}\`)" >> $GITHUB_STEP_SUMMARY
+          echo "## GB Clean" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Deleted $DELETED completed runs. Skipped $SKIPPED (current run + live sessions untouched)." >> $GITHUB_STEP_SUMMARY

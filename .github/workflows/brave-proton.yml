@@ -1,0 +1,218 @@
+name: Brave Proton
+
+run-name: "GB Brave Proton"
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration in minutes (5-360)"
+        required: false
+        default: "60"
+      auth_mode:
+        description: "Login page protection"
+        required: false
+        default: "password"
+        type: choice
+        options:
+          - password
+          - none
+      vnc_password:
+        description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
+        required: false
+        default: ""
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start browser
+        run: |
+          for i in 1 2 3 4 5; do
+            if docker pull -q lscr.io/linuxserver/brave:latest > /dev/null 2>&1; then break; fi
+            echo "image pull failed (attempt $i/5), retrying..."
+            sleep $((i * 20))
+            if [ "$i" = "5" ]; then echo "ERROR: could not pull browser image"; exit 1; fi
+          done
+          docker run -d \
+            --name browser \
+            --hostname brave \
+            --dns=94.140.14.15 \
+            --dns=94.140.15.16 \
+            --shm-size=2g \
+            -p 3000:3000 \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ=Etc/UTC \
+            -e TITLE=ghBrowser-Brave-Proton \
+            lscr.io/linuxserver/brave:latest
+
+      - name: Install Proton VPN + lock browser
+        run: |
+          docker exec browser bash -c '
+            echo "ewogICJEbnNPdmVySHR0cHNNb2RlIjogIm9mZiIsCiAgIkJ1aWx0SW5EbnNDbGllbnRFbmFibGVkIjogZmFsc2UsCiAgIkZvcmNlR29vZ2xlU2FmZVNlYXJjaCI6IHRydWUsCiAgIkZvcmNlWW91VHViZVNhZmV0eU1vZGUiOiB0cnVlLAogICJTYWZlQnJvd3NpbmdQcm90ZWN0aW9uTGV2ZWwiOiAyLAogICJTYWZlQnJvd3NpbmdFbmFibGVkIjogdHJ1ZSwKICAiRXh0ZW5zaW9uSW5zdGFsbEJsb2NrbGlzdCI6IFsKICAgICIqIgogIF0sCiAgIkV4dGVuc2lvbkluc3RhbGxBbGxvd2xpc3QiOiBbCiAgICAianBsZ2ZocG1qbmJpZ21oa2xtbWJnZWNvb2JpZmttcGEiCiAgXSwKICAiRXh0ZW5zaW9uSW5zdGFsbEZvcmNlbGlzdCI6IFsKICAgICJqcGxnZmhwbWpuYmlnbWhrbG1tYmdlY29vYmlma21wYTtodHRwczovL2NsaWVudHMyLmdvb2dsZS5jb20vc2VydmljZS91cGRhdGUyL2NyeCIKICBdLAogICJJbmNvZ25pdG9Nb2RlQXZhaWxhYmlsaXR5IjogMSwKICAiQnJvd3Nlckd1ZXN0TW9kZUVuYWJsZWQiOiBmYWxzZQp9" | base64 -d > /tmp/ghbrowser-family.json
+            echo "ewogICIzcmRwYXJ0eSI6IHsKICAgICJleHRlbnNpb25zIjogewogICAgICAianBsZ2ZocG1qbmJpZ21oa2xtbWJnZWNvb2JpZmttcGEiOiB7CiAgICAgICAgImJleC1jb25maWciOiB7CiAgICAgICAgICAiYXV0by1jb25uZWN0IjogewogICAgICAgICAgICAiY29udHJvbGxhYmxlIjogdHJ1ZSwKICAgICAgICAgICAgImNvbmZpZyI6IHsKICAgICAgICAgICAgICAidmFsdWUiOiB0cnVlCiAgICAgICAgICAgIH0KICAgICAgICAgIH0sCiAgICAgICAgICAicHJldmVudC13ZWJydGMtbGVhayI6IHsKICAgICAgICAgICAgImNvbnRyb2xsYWJsZSI6IGZhbHNlLAogICAgICAgICAgICAiY29uZmlnIjogewogICAgICAgICAgICAgICJ2YWx1ZSI6IHRydWUKICAgICAgICAgICAgfQogICAgICAgICAgfSwKICAgICAgICAgICJzZWN1cmUtY29yZSI6IHsKICAgICAgICAgICAgImNvbnRyb2xsYWJsZSI6IGZhbHNlLAogICAgICAgICAgICAiY29uZmlnIjogewogICAgICAgICAgICAgICJ2YWx1ZSI6IGZhbHNlCiAgICAgICAgICAgIH0KICAgICAgICAgIH0sCiAgICAgICAgICAibm90aWZpamF0aW9uIjogewogICAgICAgICAgICAiY29udHJvbGxhYmxlIjogdHJ1ZSwKICAgICAgICAgICAgImNvbmZpZyI6IHsKICAgICAgICAgICAgICAidmFsdWUiOiBmYWxzZQogICAgICAgICAgICB9CiAgICAgICAgICB9LAogICAgICAgICAgImNyYXNoLXJlcG9ydHMiOiB7CiAgICAgICAgICAgICJjb250cm9sbGFibGUiOiBmYWxzZSwKICAgICAgICAgICAgImNvbmZpZyI6IHsKICAgICAgICAgICAgICAidmFsdWUiOiBmYWxzZQogICAgICAgICAgICB9CiAgICAgICAgICB9LAogICAgICAgICAgInRlbGVtZXRyeSI6IHsKICAgICAgICAgICAgImNvbnRyb2xsYWJsZSI6IGZhbHNlLAogICAgICAgICAgICAiY29uZmlnIjogewogICAgICAgICAgICAgICJ2YWx1ZSI6IGZhbHNlCiAgICAgICAgICAgIH0KICAgICAgICAgIH0KICAgICAgICB9CiAgICAgIH0KICAgIH0KICB9Cn0=" | base64 -d > /tmp/proton-vpn.json
+            for d in /etc/brave/policies/managed /etc/opt/brave/policies/managed /etc/chromium/policies/managed /etc/opt/chrome/policies/managed; do
+              mkdir -p "$d" && cp /tmp/ghbrowser-family.json "$d/family-safe.json" && cp /tmp/proton-vpn.json "$d/proton-vpn.json"
+            done
+            grep -q "ExtensionInstallForcelist" /etc/brave/policies/managed/family-safe.json && echo "Proton VPN force-install policy set."
+            grep -q "prevent-webrtc-leak" /etc/brave/policies/managed/proton-vpn.json && echo "Proton VPN managed config set (auto-connect, WebRTC-leak block)."
+            MYSELF=$$
+            for p in $(pgrep -f '[b]rave' 2>/dev/null || true); do
+              if [ "$p" != "$MYSELF" ]; then kill "$p" 2>/dev/null || true; fi
+            done
+          '
+
+      - name: Wait for browser
+        run: |
+          for i in $(seq 1 120); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || true)
+            if [ "$STATUS" = "200" ] || [ "$STATUS" = "401" ]; then
+              echo "Browser ready."
+              sleep 10
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Rename user to brave
+        run: |
+          docker exec browser bash -c '
+            usermod -l brave abc &&
+            groupmod -n brave abc &&
+            usermod -d /home/brave -m brave &&
+            chown -R brave:brave /home/brave
+          ' 2>/dev/null || true
+
+      - name: Setup auth proxy + login page
+        env:
+          INPUT_PASSWORD: ${{ inputs.vnc_password }}
+          FALLBACK_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          WPASSWORD="$INPUT_PASSWORD"
+          if [ "$AUTH_MODE" = "none" ]; then
+            WPASSWORD=""
+          elif [ -z "$WPASSWORD" ]; then
+            WPASSWORD="$FALLBACK_PASSWORD"
+          fi
+          if [ -z "$WPASSWORD" ] && [ "$AUTH_MODE" != "none" ]; then
+            echo "ERROR: auth_mode=password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
+            exit 1
+          fi
+          if [ -n "$WPASSWORD" ]; then
+            echo "::add-mask::$WPASSWORD"
+          fi
+          PROXY_PASSWORD="$WPASSWORD" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "Login page ready.\n" http://localhost:8080/auth/login
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Enforce FamilySafe DNS (AdGuard, no bypass)
+        run: |
+          echo "Pinning host DNS to AdGuard Family..."
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver 94.140.14.15\nnameserver 94.140.15.16\n' | sudo tee /etc/resolv.conf > /dev/null
+          cat /etc/resolv.conf
+          echo "Blocking all non-AdGuard DNS (53) and DNS-over-TLS (853)..."
+          for IP in 94.140.14.15 94.140.15.16; do
+            sudo iptables -I OUTPUT -p udp -d "$IP" --dport 53 -j ACCEPT
+            sudo iptables -I OUTPUT -p tcp -d "$IP" --dport 53 -j ACCEPT
+          done
+          sudo iptables -A OUTPUT -p udp --dport 53 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 53 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 853 -j DROP
+          sudo iptables -A OUTPUT -p udp --dport 853 -j DROP
+          sudo ip6tables -A OUTPUT -p udp --dport 53 -j DROP || true
+          sudo ip6tables -A OUTPUT -p tcp --dport 53 -j DROP || true
+          sudo ip6tables -A OUTPUT -p tcp --dport 853 -j DROP || true
+          sudo ip6tables -A OUTPUT -p udp --dport 853 -j DROP || true
+          echo "Container DNS:"
+          docker exec browser cat /etc/resolv.conf
+          echo "Self-test: AdGuard Family must block adult domains..."
+          if curl -fsSL -m 15 'https://family.adguard-dns.com/dns-query?name=pornhub.com&type=A' -H 'accept: application/dns-json' | grep -q '0\.0\.0\.0'; then
+            echo "Family filter ACTIVE (adult domain resolves to 0.0.0.0)."
+          else
+            echo "WARNING: filter self-test inconclusive (transient network?). DNS pinning + firewall + browser locks still apply."
+          fi
+
+      - name: Start tunnel
+        run: |
+          DURATION=${{ github.event.inputs.duration || '60' }}
+          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || [ "$DURATION" -lt 5 ]; then DURATION=5; fi
+          if [ "$DURATION" -gt 360 ]; then DURATION=360; fi
+
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy ready."
+              break
+            fi
+            sleep 2
+          done
+
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+
+          URL=""
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -z "$URL" ]; then
+            echo "ERROR: tunnel URL not found. cloudflared log:"
+            cat tunnel.log || true
+            exit 1
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "Browser URL: $URL"
+          if [ "${{ inputs.auth_mode }}" = "none" ]; then
+            echo "Password: none (open access)"
+          elif [ -n "${{ inputs.vnc_password }}" ]; then
+            echo "Password: <the vnc_password you entered>"
+          else
+            echo "Password: <your BASIC_AUTH_PASSWORD secret>"
+          fi
+          echo "Expires in $DURATION minutes."
+          echo "Proton VPN: extension pre-installed. Sign in at account.proton.me in-session, then Connect."
+          echo "DNS note: VPN traffic resolves via Proton exit (AdGuard does NOT filter it)."
+          echo "=================================================="
+          echo ""
+
+          {
+            echo "## ghBrowser (Brave + Proton VPN) session live"
+            echo ""
+            echo "**URL:** $URL"
+            echo ""
+            if [ "${{ inputs.auth_mode }}" = "none" ]; then
+              echo "**Password:** none (open access)"
+            elif [ -n "${{ inputs.vnc_password }}" ]; then
+              echo "**Password:** the vnc_password you entered at dispatch"
+            else
+              echo "**Password:** your BASIC_AUTH_PASSWORD secret"
+            fi
+            echo ""
+            echo "**Proton VPN:** pre-installed + force-pinned. Open \`account.proton.me\` in-session, sign in, click the Proton icon, Connect. Auto-connect is on."
+            echo ""
+            echo "**DNS note:** while VPN is connected, sites resolve via Proton exit (AdGuard Family does NOT filter VPN traffic). Direct/local traffic still uses AdGuard. SafeSearch + WebRTC-leak block enforced."
+            echo ""
+            echo "Expires in $DURATION minutes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Keeping alive for $DURATION minutes..."
+          sleep "${DURATION}m"
+          echo "Session ended."

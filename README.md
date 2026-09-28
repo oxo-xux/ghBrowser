@@ -58,7 +58,23 @@ AdGuard Family endpoints: `94.140.14.15`, `94.140.15.16`, DoH `https://family.ad
 ## Workflows
 
 - `Firefox` / `Brave` / `Chrome` — LinuxServer desktop browser + login page + Cloudflare tunnel
+- `Chrome Proton` / `Brave Proton` — same + pre-installed Proton VPN extension (see below)
 - `Auto Cleanup` — weekly 7-day retention (run history + commit squash)
+
+## Proton VPN proxy (Chrome Proton / Brave Proton)
+
+Yes — Proton works as a **browser-level HTTPS proxy**: the extension sets an `https://<server>:4443` proxy with per-session auth, so all in-browser traffic exits via Proton. Verified in the extension code: it does zero local DNS (`chrome.dns` unused) — Chromium sends `CONNECT host:port` and **the Proton exit resolves DNS**, except LAN addresses which go `DIRECT` via container DNS.
+
+What the workflow does:
+
+- Force-installs the official extension (`ExtensionInstallForcelist`, ID `jplgfhpmjnbigmhklmmbgecoobifkmpa`) — the only exception to the `["*"]` extension blocklist
+- Managed policy pins: auto-connect on, **WebRTC-leak block locked on** (`disable_non_proxied_udp`, real IP can't leak), SecureCore off, telemetry + crash reports off
+- Keeps SafeSearch / Safe Browsing / no-Incognito locks and the AdGuard host firewall
+
+Two things to know before running it:
+
+1. **Login is in-session**: open `account.proton.me` → sign in → click the Proton icon → Connect. Needs a Proton account (extension features are plan-gated).
+2. **DNS caveat (checked)**: while VPN is connected, sites resolve via Proton — AdGuard Family does **not** filter VPN traffic. If you need the NSFW guarantee, use the plain Firefox/Brave/Chrome workflows instead.
 
 ## Architecture
 

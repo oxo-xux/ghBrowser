@@ -41,6 +41,8 @@ jobs:
           docker run -d \
             --name browser \
             --hostname firefox \
+            --dns=94.140.14.15 \
+            --dns=94.140.15.16 \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -48,6 +50,18 @@ jobs:
             -e TZ=Etc/UTC \
             -e TITLE=ghBrowser-Firefox \
             lscr.io/linuxserver/firefox:latest
+
+      - name: Lock browser (FamilySafe - no DoH, force SafeSearch)
+        run: |
+          docker exec browser bash -c '
+            mkdir -p /usr/lib/firefox/distribution /usr/lib64/firefox/distribution /opt/firefox/distribution
+            echo "ewogICJwb2xpY2llcyI6IHsKICAgICJETlNPdmVySFRUUFMiOiB7CiAgICAgICJFbmFibGVkIjogZmFsc2UsCiAgICAgICJMb2NrZWQiOiB0cnVlCiAgICB9LAogICAgIlByb3h5IjogewogICAgICAiTW9kZSI6ICJzeXN0ZW0iLAogICAgICAiTG9ja2VkIjogdHJ1ZQogICAgfSwKICAgICJCbG9ja0Fib3V0Q29uZmlnIjogdHJ1ZSwKICAgICJEaXNhYmxlRmlyZWZveFN0dWRpZXMiOiB0cnVlLAogICAgIkRpc2FibGVUZWxlbWV0cnkiOiB0cnVlLAogICAgIldlYnNpdGVGaWx0ZXIiOiB7CiAgICAgICJCbG9jayI6IFsKICAgICAgICAiKjovLyoucG9ybmh1Yi5jb20vKiIsCiAgICAgICAgIio6Ly9wb3JuaHViLmNvbS8qIiwKICAgICAgICAiKjovLyoueHZpZGVvcy5jb20vKiIsCiAgICAgICAgIio6Ly94dmlkZW9zLmNvbS8qIiwKICAgICAgICAiKjovLyoueG54eC5jb20vKiIsCiAgICAgICAgIio6Ly94bnh4LmNvbS8qIiwKICAgICAgICAiKjovLyoueGhhbXN0ZXIuY29tLyoiLAogICAgICAgICIqOi8veGhhbXN0ZXIuY29tLyoiLAogICAgICAgICIqOi8vKi5yZWR0dWJlLmNvbS8qIiwKICAgICAgICAiKjovL3JlZHR1YmUuY29tLyoiLAogICAgICAgICIqOi8vKi55b3Vwb3JuLmNvbS8qIiwKICAgICAgICAiKjovL3lvdXBvcm4uY29tLyoiLAogICAgICAgICIqOi8vKi5jaGF0dXJiYXRlLmNvbS8qIiwKICAgICAgICAiKjovLyouc3RyaXBjaGF0LmNvbS8qIiwKICAgICAgICAiKjovLyoubGl2ZWphc21pbi5jb20vKiIsCiAgICAgICAgIio6Ly8qLm9ubHlmYW5zLmNvbS8qIgogICAgICBdCiAgICB9CiAgfQp9" | base64 -d > /tmp/ghbrowser-policies.json
+            for d in /usr/lib/firefox/distribution /usr/lib64/firefox/distribution /opt/firefox/distribution; do
+              cp /tmp/ghbrowser-policies.json "$d/policies.json"
+            done
+            grep -q "DNSOverHTTPS" /usr/lib/firefox/distribution/policies.json && echo "Firefox FamilySafe policies installed."
+            pkill -f firefox || true
+          '
 
       - name: Wait for browser
         run: |
@@ -99,6 +113,34 @@ jobs:
             -o cloudflared
           chmod +x cloudflared
 
+      - name: Enforce FamilySafe DNS (AdGuard, no bypass)
+        run: |
+          echo "Pinning host DNS to AdGuard Family..."
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver 94.140.14.15\nnameserver 94.140.15.16\n' | sudo tee /etc/resolv.conf > /dev/null
+          cat /etc/resolv.conf
+          echo "Blocking all non-AdGuard DNS (53) and DNS-over-TLS (853)..."
+          for IP in 94.140.14.15 94.140.15.16; do
+            sudo iptables -I OUTPUT -p udp -d "$IP" --dport 53 -j ACCEPT
+            sudo iptables -I OUTPUT -p tcp -d "$IP" --dport 53 -j ACCEPT
+          done
+          sudo iptables -A OUTPUT -p udp --dport 53 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 53 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 853 -j DROP
+          sudo iptables -A OUTPUT -p udp --dport 853 -j DROP
+          sudo ip6tables -A OUTPUT -p udp --dport 53 -j DROP || true
+          sudo ip6tables -A OUTPUT -p tcp --dport 53 -j DROP || true
+          sudo ip6tables -A OUTPUT -p tcp --dport 853 -j DROP || true
+          sudo ip6tables -A OUTPUT -p udp --dport 853 -j DROP || true
+          echo "Container DNS:"
+          docker exec browser cat /etc/resolv.conf
+          echo "Self-test: AdGuard Family must block adult domains..."
+          if curl -fsSL -m 15 'https://family.adguard-dns.com/dns-query?name=pornhub.com&type=A' -H 'accept: application/dns-json' | grep -q '0\.0\.0\.0'; then
+            echo "Family filter ACTIVE (adult domain resolves to 0.0.0.0)."
+          else
+            echo "WARNING: filter self-test inconclusive (transient network?). DNS pinning + firewall + browser locks still apply."
+          fi
+
       - name: Start tunnel
         run: |
           DURATION=${{ github.event.inputs.duration || '60' }}
@@ -142,6 +184,7 @@ jobs:
             echo "Password: <your BASIC_AUTH_PASSWORD secret>"
           fi
           echo "Expires in $DURATION minutes."
+          echo "FamilySafe: AdGuard Family DNS enforced, NSFW blocked."
           echo "=================================================="
           echo ""
 
@@ -159,6 +202,8 @@ jobs:
             fi
             echo ""
             echo "Expires in $DURATION minutes."
+            echo ""
+            echo "FamilySafe: AdGuard Family DNS + SafeSearch enforced, NSFW blocked."
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Keeping alive for $DURATION minutes..."

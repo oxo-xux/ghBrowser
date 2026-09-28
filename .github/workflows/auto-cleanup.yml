@@ -70,6 +70,9 @@ jobs:
           fetch-depth: 0
 
       - name: Squash commit history older than 7 days
+        env:
+          GH_USER_SECRET: ${{ secrets.GH_USER }}
+          GH_EMAIL_SECRET: ${{ secrets.GH_EMAIL }}
         run: |
           OLDEST_TS=$(git log --format=%ct | sort -n | head -1)
           AGE=$(( $(date +%s) - OLDEST_TS ))
@@ -81,9 +84,12 @@ jobs:
           fi
 
           echo "Squashing history..."
+          GIT_AUTHOR_NAME="${GH_USER_SECRET:-github-actions[bot]}"
+          GIT_AUTHOR_EMAIL="${GH_EMAIL_SECRET:-41898282+github-actions[bot]@users.noreply.github.com}"
+          echo "Commit as: $GIT_AUTHOR_NAME"
           git checkout --orphan squashed-tmp
           git add -A
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "chore: squash history (7-day retention)"
+          git -c user.name="$GIT_AUTHOR_NAME" -c user.email="$GIT_AUTHOR_EMAIL" commit -m "chore: squash history (7-day retention)"
           git branch -D main
           git branch -m main
           git push --force origin main

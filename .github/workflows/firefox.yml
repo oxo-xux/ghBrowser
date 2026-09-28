@@ -60,7 +60,7 @@ jobs:
               cp /tmp/ghbrowser-policies.json "$d/policies.json"
             done
             grep -q "DNSOverHTTPS" /usr/lib/firefox/distribution/policies.json && echo "Firefox FamilySafe policies installed."
-            pkill -f firefox || true
+            pkill -f '[f]irefox' || true
           '
 
       - name: Wait for browser

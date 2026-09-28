@@ -59,7 +59,7 @@ jobs:
               mkdir -p "$d" && cp /tmp/ghbrowser-family.json "$d/family-safe.json"
             done
             grep -q "DnsOverHttpsMode" /etc/brave/policies/managed/family-safe.json && echo "Brave FamilySafe policies installed."
-            pkill -f brave || true
+            pkill -f '[b]rave' || true
           '
 
       - name: Wait for browser

@@ -59,7 +59,7 @@ jobs:
               mkdir -p "$d" && cp /tmp/ghbrowser-family.json "$d/family-safe.json"
             done
             grep -q "DnsOverHttpsMode" /etc/opt/chrome/policies/managed/family-safe.json && echo "Chrome FamilySafe policies installed."
-            pkill -f chrome || true
+            pkill -f '[c]hrome' || true
           '
 
       - name: Wait for browser

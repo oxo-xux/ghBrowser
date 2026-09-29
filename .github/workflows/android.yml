@@ -1,6 +1,6 @@
-name: FydeOS
+name: Android
 
-run-name: "GB FydeOS"
+run-name: "GB Android"
 
 on:
   workflow_dispatch:
@@ -21,150 +21,80 @@ on:
         description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
         required: false
         default: ""
-      release:
-        description: "openFyde VMware release tag (r144, r138, r120)"
+      android_version:
+        description: "Android version (9.0, 10.0, 11.0, 12.0, 13.0, 14.0)"
         required: false
-        default: "r144"
+        default: "11.0"
 
 jobs:
-  fydeos:
+  android:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install QEMU + noVNC
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf novnc websockify
-          qemu-system-x86_64 --version | head -1
-          ls /usr/share/novnc/vnc.html
-          # Make / serve the VNC client (proxy redirects here after login)
-          echo '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/vnc.html?autoconnect=true&resize=scale"></head><body>Loading FydeOS...</body></html>' | sudo tee /usr/share/novnc/index.html > /dev/null
-
-      - name: Download openFyde VMware image (FydeOS)
-        run: |
-          RELEASE="${{ github.event.inputs.release || 'r144' }}"
-          case "$RELEASE" in
-            r144|r138|r120) ;;
-            *) echo "Unknown release '$RELEASE', falling back to r144"; RELEASE="r144";;
-          esac
-          echo "Using openFyde release: $RELEASE"
-          OVA="amd64-openfyde_vmware-${RELEASE}.ova"
-          URL="https://github.com/openFyde/overlay-amd64-openfyde_vmware/releases/download/${RELEASE}/${OVA}"
-          echo "Downloading $URL ..."
-          mkdir -p fydeos-img && cd fydeos-img
-          for i in 1 2 3 4 5; do
-            if wget --progress=dot:giga -O "$OVA" "$URL"; then break; fi
-            echo "download failed (attempt $i/5), retrying..."
-            sleep $((i * 10))
-            if [ "$i" = "5" ]; then echo "ERROR: could not download FydeOS image"; exit 1; fi
-          done
-          ls -lh
-          echo "Extracting OVA..."
-          tar -xf "$OVA"
-          ls -lh
-          VMDK=$(ls *.vmdk | head -1)
-          echo "Converting $VMDK to qcow2 (this takes a minute)..."
-          qemu-img convert -p -O qcow2 "$VMDK" fydeos.qcow2
-          qemu-img info fydeos.qcow2
-          rm -f "$OVA" "$VMDK"
-          ls -lh
-
-      - name: Start FydeOS VM
+      - name: Enable KVM (hardware acceleration for emulator)
         run: |
           ls -l /dev/kvm 2>/dev/null || echo "no /dev/kvm node"
-          # Runner user often lacks rw on /dev/kvm even when it exists -> try to fix, else TCG fallback
-          sudo chmod 666 /dev/kvm 2>/dev/null || sudo setfacl -m u:$USER:rw /dev/kvm 2>/dev/null || true
+          sudo chmod 666 /dev/kvm 2>/dev/null || true
           if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-            echo "KVM usable - using hardware acceleration."
-            KVM_OPTS="-enable-kvm -cpu host"
+            echo "KVM usable - emulator will use hardware acceleration."
           else
-            echo "WARNING: /dev/kvm not usable (permission denied) - falling back to software emulation (TCG, slow)."
-            KVM_OPTS="-cpu max -accel tcg,thread=multi"
+            echo "WARNING: /dev/kvm not usable - emulator falls back to software emulation (slow)."
           fi
-          start_qemu() {
-            nohup qemu-system-x86_64 \
-              -m 4096 \
-              -smp 4 \
-              $1 \
-              -machine pc \
-              -drive file=fydeos-img/fydeos.qcow2,format=qcow2,if=virtio \
-              -device virtio-net-pci,netdev=net0 \
-              -netdev user,id=net0 \
-              -vga vmware \
-              -display none \
-              -serial file:/tmp/qemu-serial.log \
-              -vnc :0 \
-              -device qemu-xhci,id=xhci \
-              -device usb-tablet \
-              -device usb-kbd \
-              > /tmp/qemu.log 2>&1 &
-            echo $! > /tmp/qemu.pid
-          }
-          start_qemu "$KVM_OPTS"
-          echo "QEMU started (pid $(cat /tmp/qemu.pid)). Waiting for VNC :5900..."
-          for i in $(seq 1 60); do
-            if python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',5900)); s.close()" 2>/dev/null; then
-              echo "VNC port 5900 open."
-              break
-            fi
-            sleep 5
-            if ! kill -0 "$(cat /tmp/qemu.pid)" 2>/dev/null; then
-              if grep -qi "kvm.*permission denied\|failed to initialize kvm\|could not access kvm" /tmp/qemu.log 2>/dev/null; then
-                echo "KVM blocked at runtime - retrying with software emulation (TCG)..."
-                KVM_OPTS="-cpu max -accel tcg,thread=multi"
-                start_qemu "$KVM_OPTS"
-                continue
-              fi
-              echo "ERROR: QEMU died during boot. Log:"
-              cat /tmp/qemu.log || true
-              exit 1
-            fi
-          done
-          echo "Giving FydeOS 60s for first boot..."
-          sleep 60
 
-      - name: Start noVNC bridge (VNC -> web)
+      - name: Start Android (cloud phone)
         run: |
-          nohup websockify --web /usr/share/novnc 6080 localhost:5900 > /tmp/websockify.log 2>&1 &
-          echo "Waiting for noVNC on :6080..."
+          VERSION="${{ github.event.inputs.android_version || '11.0' }}"
+          case "$VERSION" in
+            9.0|10.0|11.0|12.0|13.0|14.0) ;;
+            *) echo "Unknown version '$VERSION', falling back to 11.0"; VERSION="11.0";;
+          esac
+          IMAGE="budtmo/docker-android:emulator_${VERSION}"
+          echo "Using image: $IMAGE"
+          for i in 1 2 3 4 5; do
+            if docker pull -q "$IMAGE" > /dev/null 2>&1; then break; fi
+            echo "image pull failed (attempt $i/5), retrying..."
+            sleep $((i * 20))
+            if [ "$i" = "5" ]; then echo "ERROR: could not pull Android image"; exit 1; fi
+          done
+          KVM_DEVICE=""
+          if [ -e /dev/kvm ]; then KVM_DEVICE="--device /dev/kvm"; fi
+          docker run -d \
+            --name android \
+            --dns=94.140.14.15 \
+            --dns=94.140.15.16 \
+            --shm-size=2g \
+            -p 6080:6080 \
+            -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e WEB_VNC=true \
+            $KVM_DEVICE \
+            "$IMAGE"
+
+      - name: Wait for Android boot
+        run: |
+          echo "Waiting for noVNC web UI on :6080..."
           for i in $(seq 1 60); do
-            STATUS=$(python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:6080/vnc.html', timeout=5).status)" 2>/dev/null || true)
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:6080 2>/dev/null || true)
             if [ "$STATUS" = "200" ]; then
-              echo "noVNC ready."
+              echo "noVNC web UI ready."
               break
             fi
             sleep 5
           done
-          STATUS=$(python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:6080/vnc.html', timeout=5).status)" 2>/dev/null || echo "FAIL")
-          if [ "$STATUS" != "200" ]; then
-            echo "ERROR: noVNC did not start. websockify log:"
-            cat /tmp/websockify.log || true
-            exit 1
-          fi
-
-      - name: Capture boot screenshots (diagnosis)
-        run: |
-          sudo apt-get install -y -qq vncsnapshot
-          mkdir -p /tmp/fb
-          vncsnapshot -quiet 127.0.0.1:0 /tmp/fb/boot-early.jpg || echo "early screenshot failed"
-          echo "Waiting 3 more minutes for first boot, then second screenshot..."
-          sleep 180
-          vncsnapshot -quiet 127.0.0.1:0 /tmp/fb/boot-late.jpg || echo "late screenshot failed"
-          ls -lh /tmp/fb/
-          echo "===== QEMU serial log (kernel messages) ====="
-          cat /tmp/qemu-serial.log 2>/dev/null || echo "(no serial output)"
-          echo "===== end serial log ====="
-          cp /tmp/qemu-serial.log /tmp/qemu.log /tmp/fb/ 2>/dev/null || true
-
-      - name: Upload boot screenshots
-        uses: actions/upload-artifact@v4
-        with:
-          name: fydeos-boot
-          path: /tmp/fb/
-          if-no-files-found: warn
+          echo "Waiting for emulator to finish booting (can take several minutes)..."
+          for i in $(seq 1 60); do
+            DS=$(docker exec android cat device_status 2>/dev/null || echo "waiting...")
+            echo "[$i] device_status: $DS"
+            if echo "$DS" | grep -qi "online"; then
+              echo "Emulator booted."
+              break
+            fi
+            sleep 10
+          done
+          DS=$(docker exec android cat device_status 2>/dev/null || echo "unknown")
+          echo "Final device_status: $DS"
 
       - name: Setup auth proxy + login page
         env:
@@ -191,8 +121,8 @@ jobs:
 
       - name: Install cloudflared
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -O cloudflared
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
           chmod +x cloudflared
 
       - name: Enforce FamilySafe DNS (AdGuard, no bypass)
@@ -214,11 +144,13 @@ jobs:
           sudo ip6tables -A OUTPUT -p tcp --dport 53 -j DROP || true
           sudo ip6tables -A OUTPUT -p tcp --dport 853 -j DROP || true
           sudo ip6tables -A OUTPUT -p udp --dport 853 -j DROP || true
+          echo "Container DNS:"
+          docker exec android cat /etc/resolv.conf
           echo "Self-test: AdGuard Family must block adult domains..."
-          if python3 -c "import urllib.request,json; d=json.load(urllib.request.urlopen(urllib.request.Request('https://family.adguard-dns.com/dns-query?name=pornhub.com&type=A', headers={'accept':'application/dns-json'}), timeout=15)); print(json.dumps(d))" 2>/dev/null | grep -q '0\.0\.0\.0'; then
+          if curl -fsSL -m 15 'https://family.adguard-dns.com/dns-query?name=pornhub.com&type=A' -H 'accept: application/dns-json' | grep -q '0\.0\.0\.0'; then
             echo "Family filter ACTIVE (adult domain resolves to 0.0.0.0)."
           else
-            echo "WARNING: filter self-test inconclusive (DoH blocked by firewall after pinning?). DNS pinning + firewall still apply; VM uses host NAT so its egress is filtered too."
+            echo "WARNING: filter self-test inconclusive (transient network?). DNS pinning + firewall + container DNS still apply."
           fi
 
       - name: Start tunnel
@@ -256,7 +188,7 @@ jobs:
 
           echo ""
           echo "=================================================="
-          echo "FydeOS URL: $URL"
+          echo "Android URL: $URL"
           if [ "${{ inputs.auth_mode }}" = "none" ]; then
             echo "Password: none (open access)"
           elif [ -n "${{ inputs.vnc_password }}" ]; then
@@ -265,14 +197,13 @@ jobs:
             echo "Password: <your BASIC_AUTH_PASSWORD secret>"
           fi
           echo "Expires in $DURATION minutes."
-          echo "Image: openFyde ${{ github.event.inputs.release || 'r144' }} (FydeOS open-source build, VMware board)"
+          echo "Device: Samsung Galaxy S10, Android ${{ github.event.inputs.android_version || '11.0' }} (ugphone-style cloud phone)"
           echo "FamilySafe: AdGuard Family DNS enforced, NSFW blocked."
-          echo "First boot: complete the FydeOS welcome wizard in the browser."
           echo "=================================================="
           echo ""
 
           {
-            echo "## ghBrowser (FydeOS) session live"
+            echo "## ghBrowser (Android) session live"
             echo ""
             echo "**URL:** $URL"
             echo ""
@@ -286,11 +217,9 @@ jobs:
             echo ""
             echo "Expires in $DURATION minutes."
             echo ""
-            echo "Image: openFyde ${{ github.event.inputs.release || 'r144' }} (FydeOS open-source build, VMware board)"
+            echo "Device: Samsung Galaxy S10, Android ${{ github.event.inputs.android_version || '11.0' }} (ugphone-style cloud phone)"
             echo ""
             echo "FamilySafe: AdGuard Family DNS + SafeSearch enforced, NSFW blocked."
-            echo ""
-            echo "First boot: complete the FydeOS welcome wizard in the browser."
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Keeping alive for $DURATION minutes..."

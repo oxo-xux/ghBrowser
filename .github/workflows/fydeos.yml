@@ -96,6 +96,7 @@ jobs:
               -vga virtio \
               -display none \
               -vnc :0 \
+              -device qemu-xhci,id=xhci \
               -device usb-tablet \
               -device usb-kbd \
               > /tmp/qemu.log 2>&1 &

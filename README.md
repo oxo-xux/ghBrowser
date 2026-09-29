@@ -18,7 +18,7 @@ FamilySafe filtering is forced on every session: AdGuard Family DNS, SafeSearch 
 
 ### 2. Run
 
-**Actions > Firefox / Brave / Chrome > Run workflow**
+**Actions > Firefox / Brave / Chrome / FydeOS > Run workflow**
 
 Inputs:
 
@@ -27,6 +27,7 @@ Inputs:
 | `duration` | `60` | 5-360 minutes |
 | `auth_mode` | `password` | `password` or `none` |
 | `vnc_password` | empty | Custom password for this run. Empty = use `BASIC_AUTH_PASSWORD` secret |
+| `release` | `r144` | FydeOS only: openFyde VMware tag (`r144`, `r138`, `r120`) |
 
 URL appears in the job log and in the run Summary.
 
@@ -58,6 +59,7 @@ AdGuard Family endpoints: `94.140.14.15`, `94.140.15.16`, DoH `https://family.ad
 ## Workflows
 
 - `Firefox` / `Brave` / `Chrome` — LinuxServer desktop browser + login page + Cloudflare tunnel
+- `FydeOS` — full FydeOS desktop (openFyde VMware `r144` QEMU VM + noVNC web + login page + Cloudflare tunnel). Same password inputs as browsers, plus `release` to pick the openFyde tag. Official FydeOS-for-VMware OVAs are not used because they sit behind Google Drive/iCloud with no direct download URL for Actions.
 - `Auto Cleanup` — weekly 7-day retention (run history + commit squash)
 
 ## Troubleshooting
@@ -70,5 +72,6 @@ AdGuard Family endpoints: `94.140.14.15`, `94.140.15.16`, DoH `https://family.ad
 ```
 Cloudflare Tunnel (*.trycloudflare.com)
   → python auth proxy :8080 (/auth/login)
-    → Firefox/Brave/Chrome :3000
+    → Firefox/Brave/Chrome :3000 (KasmVNC web)
+    → FydeOS :6080 (noVNC web → QEMU VNC :5900)
 ```

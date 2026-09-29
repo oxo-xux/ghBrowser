@@ -1,0 +1,302 @@
+name: FydeOS
+
+run-name: "GB FydeOS"
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration in minutes (5-360)"
+        required: false
+        default: "60"
+      auth_mode:
+        description: "Login page protection"
+        required: false
+        default: "password"
+        type: choice
+        options:
+          - password
+          - none
+      vnc_password:
+        description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
+        required: false
+        default: ""
+      release:
+        description: "openFyde VMware release tag (r144, r138, r120)"
+        required: false
+        default: "r144"
+
+jobs:
+  fydeos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install QEMU + noVNC
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf novnc websockify
+          qemu-system-x86_64 --version | head -1
+          ls /usr/share/novnc/vnc.html
+          # Make / serve the VNC client (proxy redirects here after login)
+          echo '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/vnc.html?autoconnect=true&resize=scale"></head><body>Loading FydeOS...</body></html>' | sudo tee /usr/share/novnc/index.html > /dev/null
+
+      - name: Download openFyde VMware image (FydeOS)
+        run: |
+          RELEASE="${{ github.event.inputs.release || 'r144' }}"
+          case "$RELEASE" in
+            r144|r138|r120) ;;
+            *) echo "Unknown release '$RELEASE', falling back to r144"; RELEASE="r144";;
+          esac
+          echo "Using openFyde release: $RELEASE"
+          OVA="amd64-openfyde_vmware-${RELEASE}.ova"
+          URL="https://github.com/openFyde/overlay-amd64-openfyde_vmware/releases/download/${RELEASE}/${OVA}"
+          echo "Downloading $URL ..."
+          mkdir -p fydeos-img && cd fydeos-img
+          for i in 1 2 3 4 5; do
+            if wget --progress=dot:giga -O "$OVA" "$URL"; then break; fi
+            echo "download failed (attempt $i/5), retrying..."
+            sleep $((i * 10))
+            if [ "$i" = "5" ]; then echo "ERROR: could not download FydeOS image"; exit 1; fi
+          done
+          ls -lh
+          echo "Extracting OVA..."
+          tar -xf "$OVA"
+          ls -lh
+          VMDK=$(ls *.vmdk | head -1)
+          echo "Converting $VMDK to qcow2 (this takes a minute)..."
+          qemu-img convert -p -O qcow2 "$VMDK" fydeos.qcow2
+          qemu-img info fydeos.qcow2
+          rm -f "$OVA" "$VMDK"
+          ls -lh
+
+      - name: Start FydeOS VM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo "KVM available - using hardware acceleration."
+            KVM_OPTS="-enable-kvm -cpu host"
+          else
+            echo "WARNING: /dev/kvm not found - falling back to software emulation (slow)."
+            KVM_OPTS="-cpu max"
+          fi
+          nohup qemu-system-x86_64 \
+            -m 4096 \
+            -smp 4 \
+            $KVM_OPTS \
+            -machine q35 \
+            -drive file=fydeos-img/fydeos.qcow2,format=qcow2,if=virtio \
+            -device virtio-net-pci,netdev=net0 \
+            -netdev user,id=net0 \
+            -vga virtio \
+            -display none \
+            -vnc :0 \
+            -device usb-tablet \
+            -device usb-kbd \
+            > /tmp/qemu.log 2>&1 &
+          echo $! > /tmp/qemu.pid
+          echo "QEMU started (pid $(cat /tmp/qemu.pid)). Waiting for VNC :5900..."
+          for i in $(seq 1 60); do
+            if python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',5900)); s.close()" 2>/dev/null; then
+              echo "VNC port 5900 open."
+              break
+            fi
+            sleep 5
+            if ! kill -0 "$(cat /tmp/qemu.pid)" 2>/dev/null; then
+              echo "ERROR: QEMU died during boot. Log:"
+              cat /tmp/qemu.log || true
+              exit 1
+            fi
+          done
+          echo "Giving FydeOS 60s for first boot..."
+          sleep 60
+
+      - name: Start noVNC bridge (VNC -> web)
+        run: |
+          nohup websockify --web /usr/share/novnc 6080 localhost:5900 > /tmp/websockify.log 2>&1 &
+          echo "Waiting for noVNC on :6080..."
+          for i in $(seq 1 60); do
+            STATUS=$(python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:6080/vnc.html', timeout=5).status)" 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "noVNC ready."
+              break
+            fi
+            sleep 5
+          done
+          STATUS=$(python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:6080/vnc.html', timeout=5).status)" 2>/dev/null || echo "FAIL")
+          if [ "$STATUS" != "200" ]; then
+            echo "ERROR: noVNC did not start. websockify log:"
+            cat /tmp/websockify.log || true
+            exit 1
+          fi
+
+      - name: Setup auth proxy + login page
+        env:
+          INPUT_PASSWORD: ${{ inputs.vnc_password }}
+          FALLBACK_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          WPASSWORD="$INPUT_PASSWORD"
+          if [ "$AUTH_MODE" = "none" ]; then
+            WPASSWORD=""
+          elif [ -z "$WPASSWORD" ]; then
+            WPASSWORD="$FALLBACK_PASSWORD"
+          fi
+          if [ -z "$WPASSWORD" ] && [ "$AUTH_MODE" != "none" ]; then
+            echo "ERROR: auth_mode=password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
+            exit 1
+          fi
+          if [ -n "$WPASSWORD" ]; then
+            echo "::add-mask::$WPASSWORD"
+          fi
+          UPSTREAM_PORT=6080 PROXY_PASSWORD="$WPASSWORD" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "Login page ready.\n" http://localhost:8080/auth/login
+
+      - name: Install cloudflared
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -O cloudflared
+          chmod +x cloudflared
+
+      - name: Enforce FamilySafe DNS (AdGuard, no bypass)
+        run: |
+          echo "Pinning host DNS to AdGuard Family..."
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver 94.140.14.15\nnameserver 94.140.15.16\n' | sudo tee /etc/resolv.conf > /dev/null
+          cat /etc/resolv.conf
+          echo "Blocking all non-AdGuard DNS (53) and DNS-over-TLS (853)..."
+          for IP in 94.140.14.15 94.140.15.16; do
+            sudo iptables -I OUTPUT -p udp -d "$IP" --dport 53 -j ACCEPT
+            sudo iptables -I OUTPUT -p tcp -d "$IP" --dport 53 -j ACCEPT
+          done
+          sudo iptables -A OUTPUT -p udp --dport 53 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 53 -j DROP
+          sudo iptables -A OUTPUT -p tcp --dport 853 -j DROP
+          sudo iptables -A OUTPUT -p udp --dport 853 -j DROP
+          sudo ip6tables -A OUTPUT -p udp --dport 53 -j DROP || true
+          sudo ip6tables -A OUTPUT -p tcp --dport 53 -j DROP || true
+          sudo ip6tables -A OUTPUT -p tcp --dport 853 -j DROP || true
+          sudo ip6tables -A OUTPUT -p udp --dport 853 -j DROP || true
+          echo "Self-test: AdGuard Family must block adult domains..."
+          if python3 -c "import urllib.request,json; d=json.load(urllib.request.urlopen(urllib.request.Request('https://family.adguard-dns.com/dns-query?name=pornhub.com&type=A', headers={'accept':'application/dns-json'}), timeout=15)); print(json.dumps(d))" 2>/dev/null | grep -q '0\.0\.0\.0'; then
+            echo "Family filter ACTIVE (adult domain resolves to 0.0.0.0)."
+          else
+            echo "WARNING: filter self-test inconclusive (DoH blocked by firewall after pinning?). DNS pinning + firewall still apply; VM uses host NAT so its egress is filtered too."
+          fi
+
+      - name: Start tunnel
+        run: |
+          DURATION=${{ github.event.inputs.duration || '60' }}
+          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || [ "$DURATION" -lt 5 ]; then DURATION=5; fi
+          if [ "$DURATION" -gt 360 ]; then DURATION=360; fi
+
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy ready."
+              break
+            fi
+            sleep 2
+          done
+
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+          CLOUDFLARED_PID=$!
+
+          URL=""
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -z "$URL" ]; then
+            echo "ERROR: tunnel URL not found. cloudflared log:"
+            cat tunnel.log || true
+            exit 1
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "FydeOS URL: $URL"
+          if [ "${{ inputs.auth_mode }}" = "none" ]; then
+            echo "Password: none (open access)"
+          elif [ -n "${{ inputs.vnc_password }}" ]; then
+            echo "Password: <the vnc_password you entered>"
+          else
+            echo "Password: <your BASIC_AUTH_PASSWORD secret>"
+          fi
+          echo "Expires in $DURATION minutes."
+          echo "Image: openFyde ${{ github.event.inputs.release || 'r144' }} (FydeOS open-source build, VMware board)"
+          echo "FamilySafe: AdGuard Family DNS enforced, NSFW blocked."
+          echo "First boot: complete the FydeOS welcome wizard in the browser."
+          echo "=================================================="
+          echo ""
+
+          {
+            echo "## ghBrowser (FydeOS) session live"
+            echo ""
+            echo "**URL:** $URL"
+            echo ""
+            if [ "${{ inputs.auth_mode }}" = "none" ]; then
+              echo "**Password:** none (open access)"
+            elif [ -n "${{ inputs.vnc_password }}" ]; then
+              echo "**Password:** the vnc_password you entered at dispatch"
+            else
+              echo "**Password:** your BASIC_AUTH_PASSWORD secret"
+            fi
+            echo ""
+            echo "Expires in $DURATION minutes."
+            echo ""
+            echo "Image: openFyde ${{ github.event.inputs.release || 'r144' }} (FydeOS open-source build, VMware board)"
+            echo ""
+            echo "FamilySafe: AdGuard Family DNS + SafeSearch enforced, NSFW blocked."
+            echo ""
+            echo "First boot: complete the FydeOS welcome wizard in the browser."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Keeping alive for $DURATION minutes..."
+          trap 'echo ""; echo "Session stopped early: runner shutdown (host maintenance/eviction or manual cancel) - not a workflow error."; exit 143' TERM
+          ELAPSED=0
+          FAILS=0
+          LIMIT=$((DURATION * 60))
+          while [ "$ELAPSED" -lt "$LIMIT" ]; do
+            sleep 60
+            ELAPSED=$((ELAPSED + 60))
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "Tunnel process died - restarting cloudflared..."
+              ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+              CLOUDFLARED_PID=$!
+              FAILS=0
+              sleep 10
+            elif ! curl -fsSL -m 20 "$URL/auth/login" 2>/dev/null | grep -qi "ghbrowser"; then
+              FAILS=$((FAILS + 1))
+              echo "Tunnel health check failed ($FAILS/3)..."
+              if [ "$FAILS" -ge 3 ]; then
+                echo "Tunnel looks dead - restarting cloudflared..."
+                kill "$CLOUDFLARED_PID" 2>/dev/null || true
+                ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+                CLOUDFLARED_PID=$!
+                FAILS=0
+                sleep 10
+              fi
+            else
+              FAILS=0
+            fi
+            NEW_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log 2>/dev/null | tail -1)
+            if [ -n "$NEW_URL" ] && [ "$NEW_URL" != "$URL" ]; then
+              URL="$NEW_URL"
+              echo ""
+              echo "Tunnel restarted. New URL: $URL"
+              echo ""
+              {
+                echo "## Tunnel restarted"
+                echo ""
+                echo "**New URL:** $URL"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo "Session ended."

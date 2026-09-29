@@ -61,14 +61,20 @@ jobs:
           done
           KVM_DEVICE=""
           if [ -e /dev/kvm ]; then KVM_DEVICE="--device /dev/kvm"; fi
+          # Lower resolution (720x1480) = ~4x fewer pixels for software GPU + VNC = much smoother
+          printf 'hw.lcd.width=720\nhw.lcd.height=1480\nhw.lcd.density=320\n' > /tmp/emulator-override-config.ini
+          cat /tmp/emulator-override-config.ini
           docker run -d \
             --name android \
             --dns=94.140.14.15 \
             --dns=94.140.15.16 \
             --shm-size=2g \
             -p 6080:6080 \
+            -v /tmp/emulator-override-config.ini:/tmp/emulator-override-config.ini \
             -e EMULATOR_DEVICE="Samsung Galaxy S10" \
             -e EMULATOR_NO_SKIN=true \
+            -e EMULATOR_CONFIG_PATH=/tmp/emulator-override-config.ini \
+            -e EMULATOR_ADDITIONAL_ARGS="-no-boot-anim" \
             -e WEB_VNC=true \
             $KVM_DEVICE \
             "$IMAGE"

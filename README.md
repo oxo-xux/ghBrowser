@@ -60,6 +60,11 @@ AdGuard Family endpoints: `94.140.14.15`, `94.140.15.16`, DoH `https://family.ad
 - `Firefox` / `Brave` / `Chrome` — LinuxServer desktop browser + login page + Cloudflare tunnel
 - `Auto Cleanup` — weekly 7-day retention (run history + commit squash)
 
+## Troubleshooting
+
+- **Exit 143 during "Start tunnel"**: the runner host killed the step (GitHub maintenance/eviction or manual cancel) — not a workflow bug. Just re-run. If the log ends with the "runner shutdown" message, that confirms it.
+- **Page stops loading mid-session**: the free tunnel dropped. The keep-alive loop health-checks the public URL every minute and restarts `cloudflared` automatically — grab the new URL from the log/Summary ("Tunnel restarted").
+
 ## Architecture
 
 ```

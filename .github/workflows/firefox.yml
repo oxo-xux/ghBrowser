@@ -160,6 +160,7 @@ jobs:
           done
 
           ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+          CLOUDFLARED_PID=$!
 
           URL=""
           for i in $(seq 1 60); do
@@ -210,5 +211,44 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Keeping alive for $DURATION minutes..."
-          sleep "${DURATION}m"
+          trap 'echo ""; echo "Session stopped early: runner shutdown (host maintenance/eviction or manual cancel) - not a workflow error."; exit 143' TERM
+          ELAPSED=0
+          FAILS=0
+          LIMIT=$((DURATION * 60))
+          while [ "$ELAPSED" -lt "$LIMIT" ]; do
+            sleep 60
+            ELAPSED=$((ELAPSED + 60))
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "Tunnel process died - restarting cloudflared..."
+              ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+              CLOUDFLARED_PID=$!
+              FAILS=0
+              sleep 10
+            elif ! curl -fsSL -m 20 "$URL/auth/login" 2>/dev/null | grep -qi "ghbrowser"; then
+              FAILS=$((FAILS + 1))
+              echo "Tunnel health check failed ($FAILS/3)..."
+              if [ "$FAILS" -ge 3 ]; then
+                echo "Tunnel looks dead - restarting cloudflared..."
+                kill "$CLOUDFLARED_PID" 2>/dev/null || true
+                ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+                CLOUDFLARED_PID=$!
+                FAILS=0
+                sleep 10
+              fi
+            else
+              FAILS=0
+            fi
+            NEW_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log 2>/dev/null | tail -1)
+            if [ -n "$NEW_URL" ] && [ "$NEW_URL" != "$URL" ]; then
+              URL="$NEW_URL"
+              echo ""
+              echo "Tunnel restarted. New URL: $URL"
+              echo ""
+              {
+                echo "## Tunnel restarted"
+                echo ""
+                echo "**New URL:** $URL"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           echo "Session ended."

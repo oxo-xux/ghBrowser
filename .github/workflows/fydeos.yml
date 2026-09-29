@@ -93,7 +93,7 @@ jobs:
               -drive file=fydeos-img/fydeos.qcow2,format=qcow2,if=virtio \
               -device virtio-net-pci,netdev=net0 \
               -netdev user,id=net0 \
-              -vga virtio \
+              -vga vmware \
               -display none \
               -vnc :0 \
               -device qemu-xhci,id=xhci \
@@ -143,6 +143,23 @@ jobs:
             cat /tmp/websockify.log || true
             exit 1
           fi
+
+      - name: Capture boot screenshots (diagnosis)
+        run: |
+          sudo apt-get install -y -qq vncsnapshot
+          mkdir -p /tmp/fb
+          vncsnapshot -quiet 127.0.0.1:0 /tmp/fb/boot-early.jpg || echo "early screenshot failed"
+          echo "Waiting 3 more minutes for first boot, then second screenshot..."
+          sleep 180
+          vncsnapshot -quiet 127.0.0.1:0 /tmp/fb/boot-late.jpg || echo "late screenshot failed"
+          ls -lh /tmp/fb/
+
+      - name: Upload boot screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: fydeos-boot
+          path: /tmp/fb/
+          if-no-files-found: warn
 
       - name: Setup auth proxy + login page
         env:

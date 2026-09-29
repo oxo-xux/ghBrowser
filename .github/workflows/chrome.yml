@@ -159,9 +159,13 @@ jobs:
           echo "Configuring sshd on port 2222..."
           printf 'Port 2222\nPasswordAuthentication yes\nPermitRootLogin no\nAllowUsers files\n' | sudo tee /etc/ssh/sshd_config.d/ghbrowser.conf > /dev/null
           sudo mkdir -p /run/sshd
-          sudo service ssh restart || sudo service ssh start
+          echo "Disabling sshd socket-activation (it would force port 22)..."
+          sudo systemctl stop ssh.socket ssh 2>/dev/null || true
+          sudo systemctl disable ssh.socket 2>/dev/null || true
+          sudo systemctl start ssh
           sleep 2
-          sudo service ssh status 2>/dev/null || ss -ltn | grep -q ':2222' || { echo "ERROR: sshd not listening on 2222"; exit 1; }
+          ss -ltn | grep -q ':2222' || { echo "ERROR: sshd not listening on 2222:"; ss -ltn; exit 1; }
+          (echo > /dev/tcp/127.0.0.1/2222) 2>/dev/null && echo "sshd reachable on 2222." || { echo "ERROR: cannot reach sshd on 2222"; exit 1; }
 
           echo "Starting SFTP tunnel..."
           ./cloudflared tunnel --url tcp://127.0.0.1:2222 > sftp-tunnel.log 2>&1 &

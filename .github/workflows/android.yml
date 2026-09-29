@@ -87,7 +87,7 @@ jobs:
           for i in $(seq 1 60); do
             DS=$(docker exec android cat device_status 2>/dev/null || echo "waiting...")
             echo "[$i] device_status: $DS"
-            if echo "$DS" | grep -qi "online"; then
+            if echo "$DS" | grep -qi "ready\|online"; then
               echo "Emulator booted."
               break
             fi

@@ -60,6 +60,21 @@ AdGuard Family endpoints: `94.140.14.15`, `94.140.15.16`, DoH `https://family.ad
 - `Firefox` / `Brave` / `Chrome` — LinuxServer desktop browser + login page + Cloudflare tunnel
 - `Auto Cleanup` — weekly 7-day retention (run history + commit squash)
 
+## Files (SFTP) — connect from your PC
+
+Every session (password mode) also starts an SFTP server using the **same session password**, exposed through its own tunnel. Use FileZilla/WinSCP from your PC.
+
+**On your PC:**
+
+1. Install cloudflared: `https://github.com/cloudflare/cloudflared/releases`
+2. Run (endpoint host is in the run Summary, "Files (SFTP) access"):
+   `cloudflared access tcp --hostname <SFTP_HOST> --url 127.0.0.1:2222`
+3. FileZilla/WinSCP → SFTP `127.0.0.1:2222`, user `files`, password = session password
+
+**Shared folder:** PC `/home/files/shared` ↔ inside the cloud browser `/shared` — drop files there to move them between PC and browser.
+
+Notes: plain FTP protocol can't pass through the HTTP tunnel (multi-port), which is why this is SFTP (single port, encrypted). SFTP is skipped when `auth_mode=none`. If TCP tunnels are unavailable, the browser session still runs and the log says so.
+
 ## Troubleshooting
 
 - **Exit 143 during "Start tunnel"**: the runner host killed the step (GitHub maintenance/eviction or manual cancel) — not a workflow bug. Just re-run. If the log ends with the "runner shutdown" message, that confirms it.

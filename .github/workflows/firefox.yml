@@ -32,6 +32,8 @@ jobs:
 
       - name: Start browser
         run: |
+          sudo mkdir -p /home/files/shared
+          sudo chmod 777 /home/files/shared
           for i in 1 2 3 4 5; do
             if docker pull -q lscr.io/linuxserver/firefox:latest > /dev/null 2>&1; then break; fi
             echo "image pull failed (attempt $i/5), retrying..."
@@ -43,6 +45,7 @@ jobs:
             --hostname firefox \
             --dns=94.140.14.15 \
             --dns=94.140.15.16 \
+            -v /home/files/shared:/shared \
             --shm-size=2g \
             -p 3000:3000 \
             -e PUID=1000 \
@@ -115,6 +118,90 @@ jobs:
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -o cloudflared
           chmod +x cloudflared
+
+      - name: Start SFTP file access (same session password)
+        env:
+          INPUT_PASSWORD: ${{ inputs.vnc_password }}
+          FALLBACK_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          if [ "$AUTH_MODE" = "none" ]; then
+            echo "auth_mode=none - SFTP file access disabled (no password to protect it)."
+            echo "UNAVAILABLE" > /tmp/sftp_state
+            exit 0
+          fi
+          FPASSWORD="$INPUT_PASSWORD"
+          if [ -z "$FPASSWORD" ]; then
+            FPASSWORD="$FALLBACK_PASSWORD"
+          fi
+          if [ -z "$FPASSWORD" ]; then
+            echo "ERROR: SFTP needs a password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
+            exit 1
+          fi
+          echo "::add-mask::$FPASSWORD"
+
+          echo "Installing OpenSSH server..."
+          for i in 1 2 3; do
+            if sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server; then break; fi
+            echo "apt failed (attempt $i/3), retrying..."
+            sleep 10
+            if [ "$i" = "3" ]; then echo "ERROR: could not install openssh-server"; exit 1; fi
+          done
+
+          echo "Creating SFTP user..."
+          sudo useradd -m -s /bin/bash files 2>/dev/null || true
+          echo "files:$FPASSWORD" | sudo chpasswd
+          sudo chown files:files /home/files
+          sudo chmod 755 /home/files
+          sudo mkdir -p /home/files/shared
+          sudo chmod 777 /home/files/shared
+          unset FPASSWORD
+
+          echo "Configuring sshd on port 2222..."
+          printf 'Port 2222\nPasswordAuthentication yes\nPermitRootLogin no\nAllowUsers files\n' | sudo tee /etc/ssh/sshd_config.d/ghbrowser.conf > /dev/null
+          sudo mkdir -p /run/sshd
+          sudo service ssh restart || sudo service ssh start
+          sleep 2
+          sudo service ssh status 2>/dev/null || ss -ltn | grep -q ':2222' || { echo "ERROR: sshd not listening on 2222"; exit 1; }
+
+          echo "Starting SFTP tunnel..."
+          ./cloudflared tunnel --url tcp://127.0.0.1:2222 > sftp-tunnel.log 2>&1 &
+          echo $! > /tmp/sftp_tunnel.pid
+
+          SFTP_HOST=""
+          for i in $(seq 1 12); do
+            SFTP_HOST=$(grep -o '[a-z0-9-]*\.trycloudflare\.com' sftp-tunnel.log 2>/dev/null | head -1)
+            if [ -n "$SFTP_HOST" ]; then break; fi
+            sleep 5
+          done
+
+          if [ -z "$SFTP_HOST" ]; then
+            echo "WARNING: SFTP tunnel endpoint not found (TCP quick tunnels may be unavailable). Browser session continues without SFTP."
+            tail -20 sftp-tunnel.log || true
+            echo "UNAVAILABLE" > /tmp/sftp_state
+            exit 0
+          fi
+
+          echo "$SFTP_HOST" > /tmp/sftp_host
+          echo "LIVE" > /tmp/sftp_state
+          echo ""
+          echo "=================================================="
+          echo "SFTP endpoint host: $SFTP_HOST"
+          echo "PC: cloudflared access tcp --hostname $SFTP_HOST --url 127.0.0.1:2222"
+          echo "Then SFTP to 127.0.0.1:2222 user files (session password)"
+          echo "=================================================="
+          echo ""
+
+          {
+            echo "## Files (SFTP) access"
+            echo ""
+            echo "**On your PC:**"
+            echo "1. Install cloudflared: \`https://github.com/cloudflare/cloudflared/releases\`"
+            echo "2. Run: \`cloudflared access tcp --hostname $SFTP_HOST --url 127.0.0.1:2222\`"
+            echo "3. FileZilla/WinSCP: SFTP \`127.0.0.1:2222\`, user \`files\`, password = session password"
+            echo ""
+            echo "**Shared folder:** PC \`/home/files/shared\` <-> browser \`/shared\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce FamilySafe DNS (AdGuard, no bypass)
         run: |
@@ -249,6 +336,28 @@ jobs:
                 echo ""
                 echo "**New URL:** $URL"
               } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ "$(cat /tmp/sftp_state 2>/dev/null)" = "LIVE" ]; then
+              if ! kill -0 "$(cat /tmp/sftp_tunnel.pid 2>/dev/null)" 2>/dev/null; then
+                echo "SFTP tunnel died - restarting..."
+                ./cloudflared tunnel --url tcp://127.0.0.1:2222 > sftp-tunnel.log 2>&1 &
+                echo $! > /tmp/sftp_tunnel.pid
+                sleep 10
+                NEW_SFTP=$(grep -o '[a-z0-9-]*\.trycloudflare\.com' sftp-tunnel.log 2>/dev/null | tail -1)
+                if [ -n "$NEW_SFTP" ]; then
+                  echo "$NEW_SFTP" > /tmp/sftp_host
+                  echo ""
+                  echo "SFTP restarted. New endpoint host: $NEW_SFTP"
+                  echo "PC: cloudflared access tcp --hostname $NEW_SFTP --url 127.0.0.1:2222"
+                  echo ""
+                  {
+                    echo "## SFTP restarted"
+                    echo ""
+                    echo "**New endpoint host:** $NEW_SFTP"
+                    echo "PC: \`cloudflared access tcp --hostname $NEW_SFTP --url 127.0.0.1:2222\`"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                fi
+              fi
             fi
           done
           echo "Session ended."

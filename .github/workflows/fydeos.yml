@@ -89,12 +89,13 @@ jobs:
               -m 4096 \
               -smp 4 \
               $1 \
-              -machine q35 \
+              -machine pc \
               -drive file=fydeos-img/fydeos.qcow2,format=qcow2,if=virtio \
               -device virtio-net-pci,netdev=net0 \
               -netdev user,id=net0 \
               -vga vmware \
               -display none \
+              -serial file:/tmp/qemu-serial.log \
               -vnc :0 \
               -device qemu-xhci,id=xhci \
               -device usb-tablet \
@@ -153,6 +154,10 @@ jobs:
           sleep 180
           vncsnapshot -quiet 127.0.0.1:0 /tmp/fb/boot-late.jpg || echo "late screenshot failed"
           ls -lh /tmp/fb/
+          echo "===== QEMU serial log (kernel messages) ====="
+          cat /tmp/qemu-serial.log 2>/dev/null || echo "(no serial output)"
+          echo "===== end serial log ====="
+          cp /tmp/qemu-serial.log /tmp/qemu.log /tmp/fb/ 2>/dev/null || true
 
       - name: Upload boot screenshots
         uses: actions/upload-artifact@v4

@@ -54,6 +54,12 @@ jobs:
             -e TITLE=ghBrowser-Brave \
             lscr.io/linuxserver/brave:latest
 
+      - name: Verify shared folder mount
+        run: |
+          echo "mount-ok" | sudo tee /home/files/shared/.mount-test > /dev/null
+          docker exec browser cat /shared/.mount-test | grep -q mount-ok && echo "Shared folder mount OK (browser /shared <-> host /home/files/shared)." || { echo "ERROR: /shared mount broken"; exit 1; }
+          sudo rm -f /home/files/shared/.mount-test
+
       - name: Lock browser (FamilySafe - no DoH, force SafeSearch)
         run: |
           docker exec browser bash -c '

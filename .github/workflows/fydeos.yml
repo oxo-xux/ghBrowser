@@ -74,28 +74,34 @@ jobs:
 
       - name: Start FydeOS VM
         run: |
-          if [ -e /dev/kvm ]; then
-            echo "KVM available - using hardware acceleration."
+          ls -l /dev/kvm 2>/dev/null || echo "no /dev/kvm node"
+          # Runner user often lacks rw on /dev/kvm even when it exists -> try to fix, else TCG fallback
+          sudo chmod 666 /dev/kvm 2>/dev/null || sudo setfacl -m u:$USER:rw /dev/kvm 2>/dev/null || true
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "KVM usable - using hardware acceleration."
             KVM_OPTS="-enable-kvm -cpu host"
           else
-            echo "WARNING: /dev/kvm not found - falling back to software emulation (slow)."
-            KVM_OPTS="-cpu max"
+            echo "WARNING: /dev/kvm not usable (permission denied) - falling back to software emulation (TCG, slow)."
+            KVM_OPTS="-cpu max -accel tcg,thread=multi"
           fi
-          nohup qemu-system-x86_64 \
-            -m 4096 \
-            -smp 4 \
-            $KVM_OPTS \
-            -machine q35 \
-            -drive file=fydeos-img/fydeos.qcow2,format=qcow2,if=virtio \
-            -device virtio-net-pci,netdev=net0 \
-            -netdev user,id=net0 \
-            -vga virtio \
-            -display none \
-            -vnc :0 \
-            -device usb-tablet \
-            -device usb-kbd \
-            > /tmp/qemu.log 2>&1 &
-          echo $! > /tmp/qemu.pid
+          start_qemu() {
+            nohup qemu-system-x86_64 \
+              -m 4096 \
+              -smp 4 \
+              $1 \
+              -machine q35 \
+              -drive file=fydeos-img/fydeos.qcow2,format=qcow2,if=virtio \
+              -device virtio-net-pci,netdev=net0 \
+              -netdev user,id=net0 \
+              -vga virtio \
+              -display none \
+              -vnc :0 \
+              -device usb-tablet \
+              -device usb-kbd \
+              > /tmp/qemu.log 2>&1 &
+            echo $! > /tmp/qemu.pid
+          }
+          start_qemu "$KVM_OPTS"
           echo "QEMU started (pid $(cat /tmp/qemu.pid)). Waiting for VNC :5900..."
           for i in $(seq 1 60); do
             if python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',5900)); s.close()" 2>/dev/null; then
@@ -104,6 +110,12 @@ jobs:
             fi
             sleep 5
             if ! kill -0 "$(cat /tmp/qemu.pid)" 2>/dev/null; then
+              if grep -qi "kvm.*permission denied\|failed to initialize kvm\|could not access kvm" /tmp/qemu.log 2>/dev/null; then
+                echo "KVM blocked at runtime - retrying with software emulation (TCG)..."
+                KVM_OPTS="-cpu max -accel tcg,thread=multi"
+                start_qemu "$KVM_OPTS"
+                continue
+              fi
               echo "ERROR: QEMU died during boot. Log:"
               cat /tmp/qemu.log || true
               exit 1

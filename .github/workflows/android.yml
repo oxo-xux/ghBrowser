@@ -68,6 +68,7 @@ jobs:
             --shm-size=2g \
             -p 6080:6080 \
             -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e EMULATOR_NO_SKIN=true \
             -e WEB_VNC=true \
             $KVM_DEVICE \
             "$IMAGE"

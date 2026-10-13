@@ -18,7 +18,7 @@ No content filtering. Sessions resolve DNS through Cloudflare (`1.1.1.1`) for sp
 
 ### 2. Run
 
-**Actions > Firefox / Brave / Chrome / Android > Run workflow**
+**Actions > Firefox / Brave / Chrome / Tor / Android > Run workflow**
 
 Inputs:
 
@@ -53,6 +53,7 @@ No content filtering, SafeSearch enforcement, or extension lockdown is applied. 
 ## Workflows
 
 - `Firefox` / `Brave` / `Chrome` — LinuxServer desktop browser + login page + Cloudflare tunnel
+- `Tor` — Tor Browser. Boots the Selkies desktop, installs the `ghcr.io/linuxserver/proot-apps:torbrowser` PRoot app, and launches it automatically. The first run downloads ~500MB, so the browser can take 2-3 minutes to appear. The launch log is printed in the job log and the run Summary.
 - `Android` — ugphone-style cloud phone (Samsung Galaxy S10 emulator + noVNC web + login page + Cloudflare tunnel). Same password inputs as browsers, plus `android_version` to pick the Android release.
 - `Auto Cleanup` — weekly 7-day retention (run history + commit squash)
 
@@ -60,6 +61,7 @@ No content filtering, SafeSearch enforcement, or extension lockdown is applied. 
 
 - **"You are using an unsupported command-line flag: --no-sandbox"** (Brave/Chrome infobar): the LinuxServer image hardcodes `--no-sandbox` in `/usr/bin/wrapped-brave`. The flag is required in the container, so the infobar is suppressed with `BRAVE_CLI=--test-type`.
 - **Tor Browser installs but never launches** (spinner on "Launch torbrowser"): the Tor app runs under PRoot, and Docker's default seccomp profile blocks `ptrace` without `CAP_SYS_PTRACE`. Sessions are started with `--cap-add=SYS_PTRACE`; the "Verify proot-apps" step prints `selkies-proot check` output if it still fails.
+- **Tor Browser exits immediately after launch**: `start-tor-browser` sends all of its output to `/dev/null`, so the real error is invisible. The `Tor` workflow runs it with `--verbose` and tees the output to `/config/tor-launch.log` — check that block in the job log or the run Summary.
 - **Exit 143 during "Start tunnel"**: the runner host killed the step (GitHub maintenance/eviction or manual cancel) — not a workflow bug. Just re-run. If the log ends with the "runner shutdown" message, that confirms it.
 - **Page stops loading mid-session**: the free tunnel dropped. The keep-alive loop health-checks the public URL every minute and restarts `cloudflared` automatically — grab the new URL from the log/Summary ("Tunnel restarted").
 
@@ -68,6 +70,7 @@ No content filtering, SafeSearch enforcement, or extension lockdown is applied. 
 ```
 Cloudflare Tunnel (*.trycloudflare.com)
   → python auth proxy :8080 (/auth/login)
-    → Firefox/Brave/Chrome :3000 (KasmVNC web)
+    → Firefox/Brave/Chrome :3000 (Selkies web)
+    → Tor :3000 (Selkies desktop + proot-apps:torbrowser)
     → Android :6080 (noVNC web → emulator)
 ```

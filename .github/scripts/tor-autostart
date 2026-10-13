@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Autostart for the ghBrowser Tor Browser session.
+# Installs the Tor Browser proot app and launches it, teeing everything into
+# /config so the workflow step can print it. start-tor-browser otherwise sends
+# all of its output to /dev/null, which is why failures used to be invisible.
+
+export PATH="$HOME/.local/bin:$PATH"
+export MOZ_ENABLE_WAYLAND=0
+
+LOG=/config/tor-launch.log
+
+{
+  echo "=== $(date -u) ghBrowser Tor autostart ==="
+  echo "DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+
+  echo "--- proot check ---"
+  selkies-proot check || echo "proot check failed (CAP_SYS_PTRACE missing?)"
+
+  echo "--- install ---"
+  proot-apps install torbrowser
+
+  echo "--- launch ---"
+  proot-apps run ghcr.io/linuxserver/proot-apps:torbrowser --verbose
+  echo "=== tor exited with $? ==="
+} > "$LOG" 2>&1
+
+# Keep the desktop alive after the browser is closed.
+while true; do sleep 3600; done

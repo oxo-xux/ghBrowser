@@ -18,7 +18,7 @@ No content filtering. Sessions resolve DNS through Cloudflare (`1.1.1.1`) for sp
 
 ### 2. Run
 
-**Actions > Firefox / Brave / Chrome / Tor / Android > Run workflow**
+**Actions > Firefox / Brave / Chrome / Tor > Run workflow**
 
 Inputs:
 
@@ -27,7 +27,6 @@ Inputs:
 | `duration` | `60` | 5-360 minutes |
 | `auth_mode` | `password` | `password` or `none` |
 | `vnc_password` | empty | Custom password for this run. Empty = use `BASIC_AUTH_PASSWORD` secret |
-| `android_version` | `11.0` | Android only: `9.0`, `10.0`, `11.0`, `12.0`, `13.0`, `14.0` |
 
 URL appears in the job log and in the run Summary.
 
@@ -54,7 +53,6 @@ No content filtering, SafeSearch enforcement, or extension lockdown is applied. 
 
 - `Firefox` / `Brave` / `Chrome` — LinuxServer desktop browser + login page + Cloudflare tunnel
 - `Tor` — Tor Browser. Boots the Selkies desktop, installs the `ghcr.io/linuxserver/proot-apps:torbrowser` PRoot app, and launches it automatically. The first run downloads ~500MB, so the browser can take 2-3 minutes to appear. The launch log is printed in the job log and the run Summary.
-- `Android` — ugphone-style cloud phone (Samsung Galaxy S10 emulator + noVNC web + login page + Cloudflare tunnel). Same password inputs as browsers, plus `android_version` to pick the Android release.
 - `Auto Cleanup` — weekly 7-day retention (run history + commit squash)
 
 ## Troubleshooting
@@ -72,5 +70,4 @@ Cloudflare Tunnel (*.trycloudflare.com)
   → python auth proxy :8080 (/auth/login)
     → Firefox/Brave/Chrome :3000 (Selkies web)
     → Tor :3000 (Selkies desktop + proot-apps:torbrowser)
-    → Android :6080 (noVNC web → emulator)
 ```

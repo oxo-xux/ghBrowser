@@ -1,0 +1,254 @@
+name: Android
+
+run-name: "GB Android"
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run duration in minutes (5-360)"
+        required: false
+        default: "340"
+      auth_mode:
+        description: "Login page protection"
+        required: false
+        default: "password"
+        type: choice
+        options:
+          - password
+          - none
+      vnc_password:
+        description: "Session password (empty = BASIC_AUTH_PASSWORD secret)"
+        required: false
+        default: ""
+      android_version:
+        description: "Android version (9.0, 10.0, 11.0, 12.0, 13.0, 14.0)"
+        required: false
+        default: "11.0"
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Enable KVM (hardware acceleration for emulator)
+        run: |
+          ls -l /dev/kvm 2>/dev/null || echo "no /dev/kvm node"
+          sudo chmod 666 /dev/kvm 2>/dev/null || true
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "KVM usable - emulator will use hardware acceleration."
+          else
+            echo "WARNING: /dev/kvm not usable - emulator falls back to software emulation (slow)."
+          fi
+
+      - name: Start Android (cloud phone)
+        run: |
+          VERSION="${{ github.event.inputs.android_version || '11.0' }}"
+          case "$VERSION" in
+            9.0|10.0|11.0|12.0|13.0|14.0) ;;
+            *) echo "Unknown version '$VERSION', falling back to 11.0"; VERSION="11.0";;
+          esac
+          IMAGE="budtmo/docker-android:emulator_${VERSION}"
+          echo "Using image: $IMAGE"
+          for i in 1 2 3 4 5; do
+            if docker pull -q "$IMAGE" > /dev/null 2>&1; then break; fi
+            echo "image pull failed (attempt $i/5), retrying..."
+            sleep $((i * 20))
+            if [ "$i" = "5" ]; then echo "ERROR: could not pull Android image"; exit 1; fi
+          done
+          KVM_DEVICE=""
+          if [ -e /dev/kvm ]; then KVM_DEVICE="--device /dev/kvm"; fi
+          # Lower resolution (720x1480) = ~4x fewer pixels for software GPU + VNC = much smoother
+          printf 'hw.lcd.width=720\nhw.lcd.height=1480\nhw.lcd.density=320\n' > /tmp/emulator-override-config.ini
+          cat /tmp/emulator-override-config.ini
+          docker run -d \
+            --name android \
+            --dns=1.1.1.1 \
+            --dns=1.0.0.1 \
+            --shm-size=2g \
+            -p 6080:6080 \
+            -v /tmp/emulator-override-config.ini:/tmp/emulator-override-config.ini \
+            -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e EMULATOR_NO_SKIN=true \
+            -e EMULATOR_CONFIG_PATH=/tmp/emulator-override-config.ini \
+            -e EMULATOR_ADDITIONAL_ARGS="-no-boot-anim" \
+            -e WEB_VNC=true \
+            $KVM_DEVICE \
+            "$IMAGE"
+
+      - name: Wait for Android boot
+        run: |
+          echo "Waiting for noVNC web UI on :6080..."
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:6080 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "noVNC web UI ready."
+              break
+            fi
+            sleep 2
+          done
+          echo "Waiting for emulator to finish booting (can take several minutes)..."
+          for i in $(seq 1 60); do
+            DS=$(docker exec android cat device_status 2>/dev/null || echo "waiting...")
+            echo "[$i] device_status: $DS"
+            if echo "$DS" | grep -qi "ready\|online"; then
+              echo "Emulator booted."
+              break
+            fi
+            sleep 5
+          done
+          DS=$(docker exec android cat device_status 2>/dev/null || echo "unknown")
+          echo "Final device_status: $DS"
+
+      - name: Setup auth proxy + login page
+        env:
+          INPUT_PASSWORD: ${{ inputs.vnc_password }}
+          FALLBACK_PASSWORD: ${{ secrets.BASIC_AUTH_PASSWORD }}
+          AUTH_MODE: ${{ inputs.auth_mode }}
+        run: |
+          WPASSWORD="$INPUT_PASSWORD"
+          if [ "$AUTH_MODE" = "none" ]; then
+            WPASSWORD=""
+          elif [ -z "$WPASSWORD" ]; then
+            WPASSWORD="$FALLBACK_PASSWORD"
+          fi
+          if [ -z "$WPASSWORD" ] && [ "$AUTH_MODE" != "none" ]; then
+            echo "ERROR: auth_mode=password but no vnc_password input and no BASIC_AUTH_PASSWORD secret"
+            exit 1
+          fi
+          if [ -n "$WPASSWORD" ]; then
+            echo "::add-mask::$WPASSWORD"
+          fi
+          UPSTREAM_PORT=6080 PROXY_PASSWORD="$WPASSWORD" DOWNLOAD_CONTAINER="android" nohup python3 .github/scripts/proxy.py > /tmp/proxy.log 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "Login page ready.\n" http://localhost:8080/auth/login
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Use Cloudflare DNS
+        run: |
+          echo "Pinning host DNS to Cloudflare (1.1.1.1 / 1.0.0.1)..."
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' | sudo tee /etc/resolv.conf > /dev/null
+          cat /etc/resolv.conf
+          echo "Container DNS:"
+          docker exec android cat /etc/resolv.conf
+
+      - name: Start tunnel
+        run: |
+          DURATION=${{ github.event.inputs.duration || '340' }}
+          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || [ "$DURATION" -lt 5 ]; then DURATION=5; fi
+          if [ "$DURATION" -gt 360 ]; then DURATION=360; fi
+
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/auth/login 2>/dev/null || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Proxy ready."
+              break
+            fi
+            sleep 2
+          done
+
+          ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+          CLOUDFLARED_PID=$!
+
+          URL=""
+          for i in $(seq 1 60); do
+            if grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log > /dev/null 2>&1; then
+              URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log | head -1)
+              break
+            fi
+            sleep 5
+          done
+
+          if [ -z "$URL" ]; then
+            echo "ERROR: tunnel URL not found. cloudflared log:"
+            cat tunnel.log || true
+            exit 1
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "Android URL: $URL"
+          if [ "${{ inputs.auth_mode }}" = "none" ]; then
+            echo "Password: none (open access)"
+          elif [ -n "${{ inputs.vnc_password }}" ]; then
+            echo "Password: <the vnc_password you entered>"
+          else
+            echo "Password: <your BASIC_AUTH_PASSWORD secret>"
+          fi
+          echo "Expires in $DURATION minutes."
+          echo "Device: Samsung Galaxy S10, Android ${{ github.event.inputs.android_version || '11.0' }} (ugphone-style cloud phone)"
+          echo "DNS: Cloudflare (1.1.1.1). No content filtering."
+          echo "=================================================="
+          echo ""
+
+          {
+            echo "## ghBrowser (Android) session live"
+            echo ""
+            echo "**URL:** $URL"
+            echo ""
+            if [ "${{ inputs.auth_mode }}" = "none" ]; then
+              echo "**Password:** none (open access)"
+            elif [ -n "${{ inputs.vnc_password }}" ]; then
+              echo "**Password:** the vnc_password you entered at dispatch"
+            else
+              echo "**Password:** your BASIC_AUTH_PASSWORD secret"
+            fi
+            echo ""
+            echo "Expires in $DURATION minutes."
+            echo ""
+            echo "Device: Samsung Galaxy S10, Android ${{ github.event.inputs.android_version || '11.0' }} (ugphone-style cloud phone)"
+            echo ""
+            echo "DNS: Cloudflare (1.1.1.1). No content filtering."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Keeping alive for $DURATION minutes..."
+          trap 'echo ""; echo "Session stopped early: runner shutdown (host maintenance/eviction or manual cancel) - not a workflow error."; exit 143' TERM
+          ELAPSED=0
+          FAILS=0
+          LIMIT=$((DURATION * 60))
+          while [ "$ELAPSED" -lt "$LIMIT" ]; do
+            sleep 60
+            ELAPSED=$((ELAPSED + 60))
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "Tunnel process died - restarting cloudflared..."
+              ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+              CLOUDFLARED_PID=$!
+              FAILS=0
+              sleep 10
+            elif ! curl -fsSL -m 20 "$URL/auth/login" 2>/dev/null | grep -qi "ghbrowser"; then
+              FAILS=$((FAILS + 1))
+              echo "Tunnel health check failed ($FAILS/3)..."
+              if [ "$FAILS" -ge 3 ]; then
+                echo "Tunnel looks dead - restarting cloudflared..."
+                kill "$CLOUDFLARED_PID" 2>/dev/null || true
+                ./cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+                CLOUDFLARED_PID=$!
+                FAILS=0
+                sleep 10
+              fi
+            else
+              FAILS=0
+            fi
+            NEW_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' tunnel.log 2>/dev/null | tail -1)
+            if [ -n "$NEW_URL" ] && [ "$NEW_URL" != "$URL" ]; then
+              URL="$NEW_URL"
+              echo ""
+              echo "Tunnel restarted. New URL: $URL"
+              echo ""
+              {
+                echo "## Tunnel restarted"
+                echo ""
+                echo "**New URL:** $URL"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo "Session ended."

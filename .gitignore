@@ -1,0 +1,4 @@
+tmp/
+.github/scripts/__pycache__/
+*.tgz
+download.js
